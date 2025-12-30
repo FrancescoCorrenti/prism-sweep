@@ -1,4 +1,26 @@
+# Byte-compiled / optimized / DLL files
 *.pyc
-*egg-info
-__pycache__
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# IDEs
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# PyPI
+.pypirc
+
+# OS
+.DS_Store
+Thumbs.db
+check_package.sh

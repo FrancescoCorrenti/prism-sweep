@@ -1,5 +1,9 @@
 # 🔬 PRISM - Parameter Research & Investigation Sweep Manager
 
+[![PyPI version](https://badge.fury.io/py/prism-sweep.svg)](https://badge.fury.io/py/prism-sweep)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 PRISM is a simple tool to run **parameter sweeps** for ML experiments. Give it a base config and a sweep definition, and it will generate, validate, and execute all experiment variations.
 
 ## What is PRISM?
@@ -12,12 +16,21 @@ PRISM takes your base experiment configuration and creates multiple variations b
 
 ## Installation
 
+### From PyPI (Recommended)
+
 ```bash
-cd /path/to/prism-sweep
+pip install prism-sweep
+```
+
+### From Source
+
+```bash
+git clone https://github.com/FrancescoCorrenti/prism-sweep.git
+cd prism-sweep
 pip install -e .
 ```
 
-You can use `prism_tui` or `prism` commands anywhere.
+After installation, you can use `prism_tui` or `prism` commands from anywhere.
 
 ---
 
@@ -596,6 +609,33 @@ Each study has a `.prism` state file that tracks:
 - PyYAML
 - Rich (for TUI)
 
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+
+### Development Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/FrancescoCorrenti/prism-sweep.git
+cd prism-sweep
+
+# Install in development mode
+pip install -e ".[dev]"
+
+```
+
+
 ## License
 
-MIT License
+MIT License - see [LICENSE](LICENSE) file for details.
+
+## Author
+
+Francesco Correnti
+
+## Links
+
+- **GitHub**: https://github.com/FrancescoCorrenti/prism-sweep
+- **PyPI**: https://pypi.org/project/prism-sweep/
+- **Issues**: https://github.com/FrancescoCorrenti/prism-sweep/issues
