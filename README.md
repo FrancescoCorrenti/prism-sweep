@@ -40,25 +40,33 @@ After installation, you can use `prism_tui` or `prism` commands from anywhere.
 
 The easiest way to use PRISM is through the interactive terminal interface:
 
-```bash
-prism_tui
-```
+<!-- liv gif : -->
+![prism_tui_demo](docs\live-tutorial.gif)
 
-**First Time Setup:**
-1. Navigate to your project directory in the TUI
-2. Follow the guided setup to create `prism.project.yaml`
-   - Give it a name
-   - Select sweep definition(s) 
-   - Give it a name
- 2. **Run experiments**: Study Menu → Execute Study → Run All
-   - Select base config YAML
-   - Select sweep definition(s) 
-   - Give it a name
- 3. **Monitor progress**: Watch real-time logs and metrics
- 4. **Retry failures**: Study Menu → Retry Failed
-2. **Run experiments**: Study Menu → Execute Study → Run All
-3. **Monitor progress**: Watch real-time logs and metrics
-4. **Retry failures**: Study Menu → Retry Failed
+This example uses this directory structure:
+
+```
+iris-project/
+├── configs/
+│   ├── prism/
+│   │   └── kernels.prism.yaml
+│   └── base-config.yaml
+├── iris/
+│   ├── database.sqlite
+│   └── Iris.csv
+├── outputs/
+│   ├── iris-study/
+│   │   ├── kern_linear/
+│   │   │   └── config.yaml
+│   │   ├── kern_poly/
+│   │   │   └── config.yaml
+│   │   └── kern_rbf/
+│   │   │   └── config.yaml
+│   └── iris-study.prism
+├── studies/
+├── prism.project.yaml
+└── train.py
+```
 
 ### Using the Command Line
 
@@ -90,7 +98,7 @@ prism retry lr_experiment
 
 ## What Files Do I Need?
 
-PRISM needs 3-4 files in your project:
+PRISM needs 4-5 files in your project:
 
 ### 1. **prism.project.yaml** (Project Configuration)
 
@@ -98,23 +106,21 @@ This tells PRISM where everything is. The TUI can create this for you, or create
 
 ```yaml
 project:
-  name: my-ml-project
-  version: "1.0"
+  name: "iris-test" 
+  version: "1.0.0"
 
 paths:
-  train_script: scripts/train.py        # Your training script
-  configs_dir: configs                  # Where configs live
-  prism_configs_dir: configs/prism      # Where sweep definitions live
-  output_dir: outputs                   # Where results go
-
-validator:
-  module: configs/validator.py          # Optional: custom validator
+  train_script: "train.py"
+  configs_dir: "configs"
+  prism_configs_dir: "configs/prism"
+  output_dir: "outputs"
 
 metrics:
-  output_mode: stdout_json              # How to capture metrics
+  output_mode: "stdout_json"
+  output_file: "metrics.json"
 ```
 
-### 2. **Base Config** (e.g., `configs/base.yaml`)
+### 2. **Configuration File** (e.g., `configs/*.yaml`)
 
 Your experiment's default configuration:
 
@@ -128,22 +134,38 @@ data:
   augmentation: true
 ```
 
-### 3. **Sweep Definition** (e.g., `configs/prism/lr_sweep.yaml`)
+You can have multiple base configs. Each time you create a study, you will have to specify which base config to use.
 
-Defines which parameters to vary:
+### 3. **Sweep Definition** (e.g., `configs/prism/*.prism.yaml`)
+
+This is the core of PRISM. It defines which parameters to vary and how:
 
 ```yaml
-# Nominal parameters (creates named experiments)
+# Named experiments ($ notation)
 learning_rate:
-  lr_low: 0.0001
-  lr_mid: 0.001
-  lr_high: 0.01
+  $lr_low: 0.0001
+  $lr_mid: 0.001
+  $lr_high: 0.01
 ```
+
+More examples of sweep definitions are provided at the end of this README.
 
 ### 4. **Custom Validator** (Optional: `configs/validator.py`)
 
-Validates configs before training:
+Validates configs before training.
 
+PRISM will call a `validate(config_dict)` function (or a `ConfigValidator` class) **right before launching** your training script. The input is the fully-expanded YAML config as a plain Python `dict`.
+
+Configure it in `prism.project.yaml` (path is relative to project root):
+
+```yaml
+validator:
+  module: "configs/validator.py"
+```
+You can use this to catch invalid configurations early, before wasting time and resources on training.
+- Cross-field validation
+- Set default values
+- Convert enums, paths, etc.
 ```python
 from typing import Dict, Any
 from dataclasses import dataclass
@@ -170,11 +192,16 @@ def validate(config_dict: Dict[str, Any]) -> ExperimentConfig:
     config.validate()
     return config
 ```
-- Cross-field validation
-- Set default values
-- Convert enums, paths, etc.
 
-### Your Training Script
+
+  Return value:
+  - Recommended: return a `dict` (it will be written to `config.yaml` for the experiment).
+  - Also supported: return a `dataclass` instance (PRISM will convert it to a `dict`), or an object with `to_dict()` / `__dict__`.
+
+  Failure behavior:
+  - If `validate(...)` raises an exception (e.g. `ValueError`), the experiment is marked as failed with `Config validation failed: ...`.
+
+### 5. **Training Script** (e.g., `train.py`)
 
 Make sure it accepts a `--config` argument:
 
@@ -199,49 +226,32 @@ learning_rate = config['learning_rate']
 print(json.dumps({"loss": 0.123, "accuracy": 0.95}))
 ```
 
-## File Structure
-
-After running PRISM, your project will look like:
-
-```
-your-project/
-├── prism.project.yaml           # Project config
-├── configs/
-│   ├── validator.py             # Optional: custom validator
-│   ├── base.yaml                # Base configuration
-│   └── prism/
-│       └── lr_sweep.yaml        # Sweep definition
-├── scripts/
-│   └── train.py                 # Your training script
-└── outputs/                     # Generated by PRISM
-    ├── lr_experiment.prism      # Study state (created by PRISM)
-    └── lr_experiment/           # Experiment outputs (created by PRISM)
-        ├── lr_low/
-        │   ├── config.yaml      # Validated config for this experiment
-        │   └── ...              # Your training outputs
-        ├── lr_mid/
-```
-
 ---
 
 ## Sweep Definition Syntax
 
-### Named Parameters (Nominal)
+Notes:
+- PRISM only treats these as sweep syntax: `$`-named experiments, lists of values, and `_type`/`_*` sweep definitions.
+- Do not mix `$`-named experiments with positional sweeps (lists / `_type`) in the same `.prism.yaml`. If you need both, split them into multiple prism files.
+- All overridden parameter paths must already exist in the base config (helps catch typos early).
+
+### Named Experiments (`$` notation)
 
 ```yaml
-# Creates experiments with custom names
+# Creates experiments with custom names.
+# Same $name across multiple parameters belongs to the same experiment.
 model:
   size:
-    small_model: small
-    large_model: large
+    $small_model: small
+    $large_model: large
   layers:
-    small_model: 12
-    large_model: 24
+    $small_model: 12
+    $large_model: 24
 ```
 
 Creates experiments: `small_model`, `large_model`
 
-### Positional Parameters (Lists - Zipped Together)
+### Positional Parameters (Lists)
 
 ```yaml
 # Creates experiments run_0, run_1, run_2
@@ -303,9 +313,9 @@ Sweep config (`configs/prism/lr_sweep.prism.yaml`):
 ```yaml
 optimizer:
   lr:
-    lr_low: 0.0001
-    lr_mid: 0.001
-    lr_high: 0.01
+    $lr_low: 0.0001
+    $lr_mid: 0.001
+    $lr_high: 0.01
 ```
 
 This creates 3 experiments:

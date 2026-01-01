@@ -251,9 +251,6 @@ class PrismTUI:
                     status_counts[status] = status_counts.get(status, 0) + 1
                 
                 prism_paths = data.get("prism_config_paths", [])
-                if not prism_paths:
-                    legacy = data.get("prism_config_path", "")
-                    prism_paths = [legacy] if legacy else []
                 
                 studies.append(StudyInfo(
                     name=data.get("study_name", prism_file.stem),
@@ -661,6 +658,11 @@ class PrismTUI:
         
         prism_configs = self.get_prism_config_files()
         
+        if not prism_configs:
+            prism_configs_dir = self.project.config.get_resolved_paths().prism_configs_dir
+            self.console.print(f"[yellow]⚠️  No .prism.yaml files found in {prism_configs_dir}[/yellow]")
+            self.console.print(f"[dim]You can create one later or skip to run a single experiment.[/dim]")
+        
         selected_prism: List[Path] = []
         skipped = False
         
@@ -787,7 +789,7 @@ class PrismTUI:
             self.print_study_status(self.current_study, self.current_manager)
             
             options = [
-                ("execute_next", "▶️  Execute Next", "Run the first pending experiment"),
+                ("execute_next", "▶️ Execute Next", "Run the first pending experiment"),
                 ("execute_all", "⏩ Execute All", "Run all pending experiments"),
                 ("execute_key", "🎯 Execute Specific", "Run a specific experiment by key"),
                 ("retry_failed", "🔄 Retry Failed", "Reset and re-run failed experiments"),
@@ -796,7 +798,7 @@ class PrismTUI:
                 ("mark_done", "✅ Mark Done", "Manually mark experiment as done"),
                 ("mark_failed", "❌ Mark Failed", "Manually mark experiment as failed"),
                 ("restart_study", "🔃 Restart Study", "Restart all experiments, setting them to pending"),
-                ("reset_study", "♻️  Reset Study", "Reloads all configs and resets experiments to pending"),
+                ("reset_study", "♻️ Reset Study", "Reloads all configs and resets experiments to pending"),
                 ("export_config", "💾 Export Config", "Export experiment config to file"),
                 ("back", "← Back", "Return to main menu"),
             ]
@@ -1083,30 +1085,26 @@ class PrismTUI:
         
         # Directories
         configs_dir = Prompt.ask("[cyan]Configs directory[/cyan]", default="configs")
-        studies_dir = Prompt.ask("[cyan]Studies directory[/cyan]", default="studies")
         output_dir = Prompt.ask("[cyan]Output directory[/cyan]", default="outputs")
+        
+        # Prism configs are always inside configs/prism
+        prism_configs_dir = f"{configs_dir}/prism"
         
         # Create the project config
         project_yaml = f"""# PRISM Project Configuration
-name: "{name}"
-version: "1.0.0"
-
-train:
-  script: "{train_script}"
-  config_arg: "{config_arg}"
-  extra_args: []
-  env: {{}}
+project:
+  name: "{name}"
+  version: "1.0.0"
 
 paths:
-  configs: "{configs_dir}"
-  studies: "{studies_dir}"
-  output: "{output_dir}"
+  train_script: "{train_script}"
+  configs_dir: "{configs_dir}"
+  prism_configs_dir: "{prism_configs_dir}"
+  output_dir: "{output_dir}"
 
 metrics:
-  source: "stdout_json"
-  patterns:
-    loss: "loss"
-    accuracy: "accuracy"
+  output_mode: "stdout_json"
+  output_file: "metrics.json"
 """
         
         # Summary
@@ -1116,7 +1114,7 @@ metrics:
             f"[white]Root:[/white] {root}\n"
             f"[white]Train:[/white] {train_script} {config_arg} <config>\n"
             f"[white]Configs:[/white] {configs_dir}/\n"
-            f"[white]Studies:[/white] {studies_dir}/\n"
+            f"[white]Prism Configs:[/white] {prism_configs_dir}/\n"
             f"[white]Output:[/white] {output_dir}/",
             title="📋 Project Summary",
             border_style="green"
@@ -1129,7 +1127,7 @@ metrics:
             # Create directories
             root.mkdir(parents=True, exist_ok=True)
             (root / configs_dir).mkdir(parents=True, exist_ok=True)
-            (root / studies_dir).mkdir(parents=True, exist_ok=True)
+            (root / prism_configs_dir).mkdir(parents=True, exist_ok=True)
             (root / output_dir).mkdir(parents=True, exist_ok=True)
             
             # Write project file
@@ -1234,8 +1232,13 @@ metrics:
                                 break
 
                     except Exception as e:
+                        import traceback
                         self.console.print(f"[red]❌ Failed to create study: {e}[/red]")
+                        self.console.print(f"[dim]{traceback.format_exc()}[/dim]")
                         Prompt.ask("\n[dim]Press Enter to continue[/dim]")
+                else:
+                    self.console.print("[yellow]Study creation cancelled or failed.[/yellow]")
+                    Prompt.ask("\n[dim]Press Enter to continue[/dim]")
                             
             elif action == "delete":
                 if not studies:

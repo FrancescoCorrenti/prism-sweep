@@ -4,7 +4,7 @@ Prism Manager - Core Logic for Parameter Sweep Management
 This module provides the PrismManager class that handles:
 - Configuration expansion from base + prism configs
 - State file (.prism) management
-- Nominal (dictionary) and Positional (list) parameter linking
+- Named experiments ($-notation), positional sweeps (list), and sweep definitions (_type/_*)
 - Experiment naming and tracking
 """
 
@@ -88,23 +88,6 @@ class PrismState:
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
     
-    @property
-    def prism_config_path(self) -> str:
-        """For backward compatibility."""
-        return self.prism_config_paths[0] if self.prism_config_paths else ""
-    
-    @property
-    def prism_config_content(self) -> Dict[str, Any]:
-        """For backward compatibility, return merged prism config."""
-        if not self.prism_configs_content:
-            return {}
-        if len(self.prism_configs_content) == 1:
-            return self.prism_configs_content[0]
-        merged = {}
-        for cfg in self.prism_configs_content:
-            merged = deep_merge(merged, cfg)
-        return merged
-    
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -124,18 +107,15 @@ class PrismState:
         experiments = {}
         for k, v in data.get("experiments", {}).items():
             experiments[k] = ExperimentRecord.from_dict(v)
-        
-        # Handle backward compatibility
-        prism_config_paths = data.get("prism_config_paths")
-        if prism_config_paths is None:
-            legacy_path = data.get("prism_config_path", "")
-            prism_config_paths = [legacy_path] if legacy_path else []
-        
-        prism_configs_content = data.get("prism_configs_content")
-        if prism_configs_content is None:
-            legacy_content = data.get("prism_config_content", {})
-            prism_configs_content = [legacy_content] if legacy_content else []
-        
+
+        if "prism_config_paths" not in data or "prism_configs_content" not in data:
+            raise ValueError(
+                "Legacy .prism state file format detected. Please recreate the study/state file with the current PRISM version."
+            )
+
+        prism_config_paths = data["prism_config_paths"]
+        prism_configs_content = data["prism_configs_content"]
+
         return cls(
             study_name=data["study_name"],
             base_config_path=data["base_config_path"],
@@ -157,15 +137,16 @@ class PrismManager:
     
     Prism Config Format:
     --------------------
-    Prism configs can contain two types of parameter specifications:
+        Prism configs can contain three types of parameter specifications:
     
-    1. Nominal Linking (Dictionary): Named configurations
+        1. Named experiments ($-notation): Named configurations
        ```yaml
        training:
          optimizer:
-           lr: {"low_lr": 0.0001, "high_lr": 0.01}
+                     lr: {"$low_lr": 0.0001, "$high_lr": 0.01}
        ```
-       Creates experiments named by their keys (low_lr, high_lr).
+             Creates experiments named by their keys (low_lr, high_lr).
+             The same $name can be reused on multiple parameters to build a single experiment.
        
     2. Positional Linking (List): Sequential configurations  
        ```yaml
@@ -173,6 +154,14 @@ class PrismManager:
          seed: [42, 123, 456]
        ```
        Creates experiments run_0, run_1, run_2, etc.
+
+        3. Sweep definitions (_type/_*): Advanced generators
+             ```yaml
+             optimizer:
+                 lr:
+                     _type: choice
+                     _values: [0.001, 0.01]
+             ```
     
     Usage:
     ------
@@ -356,6 +345,15 @@ class PrismManager:
     def _get_nested_value(self, config: Dict, key_path: str, default: Any = None) -> Any:
         """Get a value from a nested dictionary using dot notation."""
         return deep_get(config, key_path, default)
+
+    def _assert_path_exists_in_base(self, base_config: Dict[str, Any], key_path: str):
+        """Ensure an override path exists in base config to avoid silent typos."""
+        sentinel = object()
+        if deep_get(base_config, key_path, sentinel) is sentinel:
+            raise ValueError(
+                f"Prism override refers to '{key_path}', but that path does not exist in base config. "
+                "Add it to the base config first (or fix the typo)."
+            )
     
     def _is_sweep_definition(self, value: Any) -> bool:
         """
@@ -386,60 +384,46 @@ class PrismManager:
             return sweep_def.get("_values", [])
         
         elif sweep_type == "range":
-            import numpy as np
             start = sweep_def.get("_min", 0)
             stop = sweep_def.get("_max", 1)
             step = sweep_def.get("_step", 1)
-            return list(np.arange(start, stop + step/2, step))
+            if step == 0:
+                raise ValueError("range sweep requires _step != 0")
+
+            values: List[Any] = []
+            current = start
+            # Inclusive stop with tolerance for floats
+            eps = 1e-12
+            if step > 0:
+                while current <= stop + eps:
+                    values.append(current)
+                    current = current + step
+            else:
+                while current >= stop - eps:
+                    values.append(current)
+                    current = current + step
+            return values
         
         elif sweep_type == "linspace":
-            import numpy as np
             start = sweep_def.get("_min", 0)
             stop = sweep_def.get("_max", 1)
-            num = sweep_def.get("_num", 10)
-            return list(np.linspace(start, stop, num))
+            num = int(sweep_def.get("_num", 10))
+            if num <= 0:
+                return []
+            if num == 1:
+                return [start]
+            step = (stop - start) / (num - 1)
+            return [start + i * step for i in range(num)]
         
         else:
             # Unknown type, return values if present
             return sweep_def.get("_values", [sweep_def])
     
-    def _is_nominal_parameter(self, value: Dict[str, Any]) -> bool:
-        """
-        Determine if a dictionary represents a nominal parameter (sweep config)
-        rather than a nested configuration section.
-        """
+    def _is_dollar_experiment_map(self, value: Dict[str, Any]) -> bool:
+        """Return True if dict is a $experiment-name map (all keys start with '$')."""
         if not isinstance(value, dict) or not value:
             return False
-        
-        # Sweep definitions are NOT nominal parameters, they're positional
-        if self._is_sweep_definition(value):
-            return False
-        
-        # Check if all values are terminal (non-dict)
-        for v in value.values():
-            if isinstance(v, dict):
-                return False
-        
-        # Common config section keys that are NOT nominal
-        config_section_keys = {
-            'type', 'enabled', 'mode', 'path', 'dir', 'root', 'name',
-            'lr', 'weight_decay', 'momentum', 'batch_size', 'num_workers',
-            'patience', 'factor', 'min_lr', 'delta',
-            'train', 'val', 'test', 'prob', 'mean', 'std'
-        }
-        
-        if all(k.lower() in config_section_keys for k in value.keys()):
-            return False
-        
-        # If keys have underscores or look like identifiers, likely nominal
-        identifier_patterns = ['conf', 'exp', 'run', 'model', 'setting']
-        for k in value.keys():
-            if '_' in k and not k.startswith('_'):
-                return True
-            if any(k.lower().startswith(p) for p in identifier_patterns):
-                return True
-        
-        return False
+        return all(isinstance(k, str) and k.startswith("$") for k in value.keys())
     
     def _extract_parameter_types(self, prism_config: Dict[str, Any]) -> tuple:
         """
@@ -464,16 +448,22 @@ class PrismManager:
                             positional_params[full_key] = expanded
                         elif len(expanded) == 1:
                             scalar_params[full_key] = expanded[0]
-                    elif self._is_nominal_parameter(value):
-                        nominal_params[full_key] = value
+                    elif self._is_dollar_experiment_map(value):
+                        mapped: Dict[str, Any] = {}
+                        for exp_key, exp_value in value.items():
+                            exp_name = exp_key[1:]
+                            if not exp_name:
+                                raise ValueError(f"Invalid experiment name '{exp_key}' under '{full_key}'")
+                            if exp_name in mapped:
+                                raise ValueError(f"Duplicate experiment key '${exp_name}' under '{full_key}'")
+                            mapped[exp_name] = exp_value
+                        nominal_params[full_key] = mapped
                     else:
                         extract_recursive(value, full_key)
                 elif isinstance(value, list):
-                    if all(not isinstance(item, (dict, list)) for item in value):
-                        if len(value) > 1 and isinstance(value[0], (int, float)):
-                            positional_params[full_key] = value
-                        else:
-                            scalar_params[full_key] = value
+                    # List-of-values sweep only if items are scalar (no dict/list)
+                    if all(not isinstance(item, (dict, list)) for item in value) and len(value) > 1:
+                        positional_params[full_key] = value
                     else:
                         scalar_params[full_key] = value
                 else:
@@ -496,13 +486,21 @@ class PrismManager:
         
         for prism_config in prism_configs:
             nominal_params, positional_params, _ = self._extract_parameter_types(prism_config)
+
+            if nominal_params and positional_params:
+                raise ValueError(
+                    "A single .prism.yaml file cannot mix $-named experiments and positional sweeps. "
+                    "Split them into multiple prism files if you need both."
+                )
             
             file_keys = []
             if nominal_params:
                 file_keys = self._get_nominal_keys(nominal_params)
             elif positional_params:
-                first_list = list(positional_params.values())[0]
-                file_keys = [f"run_{j}" for j in range(len(first_list))]
+                lengths = [len(v) for v in positional_params.values()]
+                if len(set(lengths)) != 1:
+                    raise ValueError(f"Positional parameters have different lengths: {lengths}")
+                file_keys = [f"run_{j}" for j in range(lengths[0])]
             
             if file_keys:
                 keys_per_file.append(file_keys)
@@ -568,8 +566,14 @@ class PrismManager:
             return self._expand_configs_cartesian(prism_keys)
         
         # Single file mode
-        prism_config = self.state.prism_config_content
+        prism_config = self.state.prism_configs_content[0]
         nominal_params, positional_params, scalar_params = self._extract_parameter_types(prism_config)
+
+        if nominal_params and positional_params:
+            raise ValueError(
+                "A single .prism.yaml file cannot mix $-named experiments and positional sweeps. "
+                "Split them into multiple prism files if you need both."
+            )
         
         print_info(f"Found {len(nominal_params)} nominal, {len(positional_params)} positional, {len(scalar_params)} scalar params")
         
@@ -584,10 +588,12 @@ class PrismManager:
                 merged = copy.deepcopy(base_config)
                 
                 for param_path, value in scalar_params.items():
+                    self._assert_path_exists_in_base(base_config, param_path)
                     self._set_nested_value(merged, param_path, value)
                 
                 for param_path, param_values in nominal_params.items():
                     if config_key in param_values:
+                        self._assert_path_exists_in_base(base_config, param_path)
                         self._set_nested_value(merged, param_path, param_values[config_key])
                 
                 experiments[config_key] = merged
@@ -607,9 +613,11 @@ class PrismManager:
                     merged = copy.deepcopy(base_config)
                     
                     for param_path, value in scalar_params.items():
+                        self._assert_path_exists_in_base(base_config, param_path)
                         self._set_nested_value(merged, param_path, value)
                     
                     for param_path, param_values in positional_params.items():
+                        self._assert_path_exists_in_base(base_config, param_path)
                         self._set_nested_value(merged, param_path, param_values[run_idx])
                     
                     experiments[run_key] = merged
@@ -623,9 +631,11 @@ class PrismManager:
                     merged = copy.deepcopy(base_config)
                     
                     for param_path, value in scalar_params.items():
+                        self._assert_path_exists_in_base(base_config, param_path)
                         self._set_nested_value(merged, param_path, value)
                     
                     for param_path, value in zip(param_paths, combo):
+                        self._assert_path_exists_in_base(base_config, param_path)
                         self._set_nested_value(merged, param_path, value)
                     
                     experiments[run_key] = merged
@@ -634,6 +644,7 @@ class PrismManager:
         elif scalar_params:
             merged = copy.deepcopy(base_config)
             for param_path, value in scalar_params.items():
+                self._assert_path_exists_in_base(base_config, param_path)
                 self._set_nested_value(merged, param_path, value)
             experiments["default"] = merged
         
@@ -671,13 +682,34 @@ class PrismManager:
             
             for file_idx, key_for_file in enumerate(combo):
                 nominal_params, positional_params, scalar_params = params_per_file[file_idx]
+
+                if nominal_params and positional_params:
+                    raise ValueError(
+                        "A single .prism.yaml file cannot mix $-named experiments and positional sweeps. "
+                        "Split them into multiple prism files if you need both."
+                    )
                 
                 for param_path, value in scalar_params.items():
+                    self._assert_path_exists_in_base(base_config, param_path)
                     self._set_nested_value(merged, param_path, value)
                 
-                for param_path, param_values in nominal_params.items():
-                    if key_for_file in param_values:
-                        self._set_nested_value(merged, param_path, param_values[key_for_file])
+                if nominal_params:
+                    for param_path, param_values in nominal_params.items():
+                        if key_for_file in param_values:
+                            self._assert_path_exists_in_base(base_config, param_path)
+                            self._set_nested_value(merged, param_path, param_values[key_for_file])
+                elif positional_params:
+                    if not key_for_file.startswith("run_"):
+                        raise ValueError(f"Invalid positional key '{key_for_file}'")
+                    run_idx = int(key_for_file.split("_", 1)[1])
+                    lengths = [len(v) for v in positional_params.values()]
+                    if len(set(lengths)) != 1:
+                        raise ValueError(f"Positional parameters have different lengths: {lengths}")
+                    if run_idx < 0 or run_idx >= lengths[0]:
+                        raise ValueError(f"Positional key '{key_for_file}' out of range (0..{lengths[0]-1})")
+                    for param_path, param_values in positional_params.items():
+                        self._assert_path_exists_in_base(base_config, param_path)
+                        self._set_nested_value(merged, param_path, param_values[run_idx])
             
             experiments[compound_key] = merged
         

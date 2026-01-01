@@ -357,8 +357,9 @@ class Executor:
         timeout: Optional[int],
     ) -> Dict[str, Any]:
         """Run command with live output while still capturing it."""
-        import select
         import io
+        import threading
+        import queue
         
         stdout_capture = io.StringIO()
         stderr_capture = io.StringIO()
@@ -373,50 +374,45 @@ class Executor:
             bufsize=1,  # Line buffered
         )
         
-        start_time = time.time()
+        # Use threads to read stdout and stderr without blocking
+        # This works on both Windows and Unix
+        def read_stream(stream, capture, print_func):
+            """Read from stream and capture/print in a thread."""
+            try:
+                for line in iter(stream.readline, ''):
+                    if line:
+                        print_func(line, end='')
+                        capture.write(line)
+            except Exception:
+                pass
+            finally:
+                stream.close()
+        
+        stdout_thread = threading.Thread(
+            target=read_stream,
+            args=(process.stdout, stdout_capture, print),
+            daemon=True
+        )
+        stderr_thread = threading.Thread(
+            target=read_stream,
+            args=(process.stderr, stderr_capture, lambda x, **kw: print(x, file=sys.stderr, **kw)),
+            daemon=True
+        )
+        
+        stdout_thread.start()
+        stderr_thread.start()
         
         try:
-            while True:
-                # Check timeout
-                if timeout and (time.time() - start_time) > timeout:
-                    process.kill()
-                    raise subprocess.TimeoutExpired(cmd, timeout)
-                
-                # Check if process has finished
-                if process.poll() is not None:
-                    break
-                
-                # Use select for non-blocking read (Unix only)
-                if hasattr(select, 'select'):
-                    readable, _, _ = select.select(
-                        [process.stdout, process.stderr],
-                        [],
-                        [],
-                        0.1,  # 100ms timeout
-                    )
-                    
-                    for stream in readable:
-                        line = stream.readline()
-                        if line:
-                            if stream == process.stdout:
-                                print(line, end='')
-                                stdout_capture.write(line)
-                            else:
-                                print(line, end='', file=sys.stderr)
-                                stderr_capture.write(line)
-                else:
-                    # Fallback for Windows
-                    time.sleep(0.1)
+            # Wait for process with timeout
+            process.wait(timeout=timeout)
             
-            # Read any remaining output
-            remaining_stdout, remaining_stderr = process.communicate()
-            if remaining_stdout:
-                print(remaining_stdout, end='')
-                stdout_capture.write(remaining_stdout)
-            if remaining_stderr:
-                print(remaining_stderr, end='', file=sys.stderr)
-                stderr_capture.write(remaining_stderr)
-        
+            # Wait for threads to finish reading
+            stdout_thread.join(timeout=1.0)
+            stderr_thread.join(timeout=1.0)
+            
+        except subprocess.TimeoutExpired:
+            process.kill()
+            raise
         except KeyboardInterrupt:
             process.kill()
             raise
