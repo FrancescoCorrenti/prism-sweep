@@ -1,0 +1,24 @@
+# Example: Using product mode for different sweep lengths
+# This demonstrates how to use _linking_mode to create cartesian product
+# of parameters with different numbers of values
+
+# Specify linking mode at top level (optional, defaults to "zip")
+_linking_mode: product
+
+# Learning rate sweep: 10 values
+learning_rate:
+  _type: range
+  _min: 0.001
+  _max: 0.01
+  _step: 0.001
+
+# Batch size sweep: 7 values
+batch_size:
+  _type: range
+  _min: 16
+  _max: 64
+  _step: 8
+
+# This will create 10 × 7 = 70 experiments
+# Without _linking_mode: product, this would raise an error
+# because the sweeps have different lengths (10 vs 7)

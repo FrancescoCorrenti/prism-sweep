@@ -16,7 +16,7 @@ PRISM takes your base experiment configuration and creates multiple variations b
 
 ## Installation
 
-### From PyPI (Recommended)
+### From pip
 
 ```bash
 pip install prism-sweep
@@ -52,21 +52,23 @@ iris-project/
 │   │   └── kernels.prism.yaml
 │   └── base-config.yaml
 ├── iris/
-│   ├── database.sqlite
 │   └── Iris.csv
+└── train.py
+```
+
+Prism will then generate:
+```
+iris-project/
 ├── outputs/
-│   ├── iris-study/
+│   ├── kernels/
 │   │   ├── kern_linear/
 │   │   │   └── config.yaml
 │   │   ├── kern_poly/
 │   │   │   └── config.yaml
 │   │   └── kern_rbf/
 │   │   │   └── config.yaml
-│   └── iris-study.prism
-├── studies/
-├── prism.project.yaml
-└── train.py
-```
+│   └── kernels.study.json
+└── prism.project.yaml
 
 ### Using the Command Line
 
@@ -105,8 +107,9 @@ PRISM needs 4-5 files in your project:
 This tells PRISM where everything is. The TUI can create this for you, or create it manually:
 
 ```yaml
+# PRISM Project Configuration
 project:
-  name: "iris-test" 
+  name: "iris"
   version: "1.0.0"
 
 paths:
@@ -125,13 +128,11 @@ metrics:
 Your experiment's default configuration:
 
 ```yaml
-learning_rate: 0.001
-batch_size: 32
-epochs: 100
-model: resnet18
-data:
-  path: /data/train
-  augmentation: true
+C: 1
+sigma: 0.5
+kernel: "rbf"
+# Other parameters... 
+# You can use nested structures too, prism supports full YAML syntax.
 ```
 
 You can have multiple base configs. Each time you create a study, you will have to specify which base config to use.
@@ -141,11 +142,10 @@ You can have multiple base configs. Each time you create a study, you will have 
 This is the core of PRISM. It defines which parameters to vary and how:
 
 ```yaml
-# Named experiments ($ notation)
-learning_rate:
-  $lr_low: 0.0001
-  $lr_mid: 0.001
-  $lr_high: 0.01
+kernel: 
+  $kern_rbf: "rbf"
+  $kern_linear: "linear"
+  $kern_poly: "poly"
 ```
 
 More examples of sweep definitions are provided at the end of this README.
@@ -192,8 +192,6 @@ def validate(config_dict: Dict[str, Any]) -> ExperimentConfig:
     config.validate()
     return config
 ```
-
-
   Return value:
   - Recommended: return a `dict` (it will be written to `config.yaml` for the experiment).
   - Also supported: return a `dataclass` instance (PRISM will convert it to a `dict`), or an object with `to_dict()` / `__dict__`.
@@ -231,7 +229,10 @@ print(json.dumps({"loss": 0.123, "accuracy": 0.95}))
 ## Sweep Definition Syntax
 
 Notes:
-- PRISM only treats these as sweep syntax: `$`-named experiments, lists of values, and `_type`/`_*` sweep definitions.
+- PRISM only treats these as sweep syntax:
+ - `$`-named experiments 
+ - lists of values
+ - `_type`/`_*` sweep definitions.
 - Do not mix `$`-named experiments with positional sweeps (lists / `_type`) in the same `.prism.yaml`. If you need both, split them into multiple prism files.
 - All overridden parameter paths must already exist in the base config (helps catch typos early).
 

@@ -1,0 +1,23 @@
+# Example: Using zip mode (default) for matched sweep lengths
+# This demonstrates paired element-by-element combination
+
+# Linking mode is "zip" by default (no need to specify)
+# _linking_mode: zip
+
+# Learning rate sweep: 3 values
+learning_rate:
+  _type: choice
+  _values: [0.001, 0.01, 0.1]
+
+# Weight decay sweep: 3 values (same length!)
+weight_decay:
+  _type: choice
+  _values: [1e-5, 1e-4, 1e-3]
+
+# This will create 3 experiments:
+# - run_0: lr=0.001, wd=1e-5
+# - run_1: lr=0.01, wd=1e-4
+# - run_2: lr=0.1, wd=1e-3
+#
+# If the lengths were different, this would raise an error:
+# ValueError: Positional parameters have different lengths

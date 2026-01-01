@@ -3,7 +3,7 @@ Prism Manager - Core Logic for Parameter Sweep Management
 
 This module provides the PrismManager class that handles:
 - Configuration expansion from base + prism configs
-- State file (.prism) management
+- State file (.study.json) management
 - Named experiments ($-notation), positional sweeps (list), and sweep definitions (_type/_*)
 - Experiment naming and tracking
 """
@@ -26,6 +26,9 @@ from .utils import (
 if TYPE_CHECKING:
     from .project import Project
     from .executor import Executor
+
+
+STUDY_STATE_EXTENSION = ".study.json"
 
 
 class ExperimentStatus(str, Enum):
@@ -109,9 +112,7 @@ class PrismState:
             experiments[k] = ExperimentRecord.from_dict(v)
 
         if "prism_config_paths" not in data or "prism_configs_content" not in data:
-            raise ValueError(
-                "Legacy .prism state file format detected. Please recreate the study/state file with the current PRISM version."
-            )
+            raise ValueError("Invalid study state file format")
 
         prism_config_paths = data["prism_config_paths"]
         prism_configs_content = data["prism_configs_content"]
@@ -189,6 +190,8 @@ class PrismManager:
         prism_config_path: Union[str, Path, List[Union[str, Path]], None] = None,
         study_name: str = "study",
         output_dir: Union[str, Path] = "outputs",
+        state_file_path: Optional[Union[str, Path]] = None,
+        load_state: bool = True,
     ):
         """
         Initialize PrismManager.
@@ -199,8 +202,10 @@ class PrismManager:
                               - Single path
                               - List of paths (cartesian product)
                               - None (single experiment = base config only)
-            study_name: Name of the study (used for .prism state file)
+            study_name: Name of the study (used for .study.json state file)
             output_dir: Directory for outputs and state file
+            state_file_path: Optional explicit state file path override
+            load_state: If False, do not load/create state in __init__ (used internally)
         """
         self.base_config_path = Path(base_config_path)
         
@@ -215,11 +220,22 @@ class PrismManager:
         self.study_name = study_name
         self.output_dir = Path(output_dir)
         
-        # State file path
-        self.state_file_path = self.output_dir / f"{study_name}.prism"
-        
+        # State file path (canonical)
+        if state_file_path is not None:
+            self.state_file_path = Path(state_file_path)
+        else:
+            self.state_file_path = self.output_dir / f"{study_name}{STUDY_STATE_EXTENSION}"
+
         # Load or create state
-        self.state: PrismState = self._load_or_create_state()
+        if load_state:
+            self.state: PrismState = self._load_or_create_state()
+        else:
+            # Placeholder; caller is expected to assign a real state
+            self.state = PrismState(
+                study_name=self.study_name,
+                base_config_path=str(self.base_config_path),
+                prism_config_paths=[str(p) for p in self.prism_config_paths],
+            )
     
     # =========================================================================
     # File I/O
@@ -313,7 +329,7 @@ class PrismManager:
         return state
     
     def _save_state(self, state: Optional[PrismState] = None):
-        """Save current state to the .prism file."""
+        """Save current state to the .study.json file."""
         if state is None:
             state = self.state
         state.updated_at = datetime.now().isoformat()
@@ -438,6 +454,9 @@ class PrismManager:
         
         def extract_recursive(config: Dict, prefix: str = ""):
             for key, value in config.items():
+                # Skip the special _linking_mode key
+                if key == "_linking_mode":
+                    continue
                 full_key = f"{prefix}.{key}" if prefix else key
                 
                 if isinstance(value, dict):
@@ -538,14 +557,14 @@ class PrismManager:
     def expand_configs(
         self,
         prism_keys: Optional[List[str]] = None,
-        linking_mode: str = "zip"
+        linking_mode: Optional[str] = None
     ) -> Dict[str, Dict[str, Any]]:
         """
         Expand the base config with prism overrides to generate experiment configs.
         
         Args:
             prism_keys: Optional list of specific keys to generate
-            linking_mode: "zip" (strict) or "product" (cartesian)
+            linking_mode: "zip" (strict) or "product" (cartesian). If None, reads from prism file or defaults to "zip"
         
         Returns:
             Dict of {experiment_key: merged_config}
@@ -567,6 +586,15 @@ class PrismManager:
         
         # Single file mode
         prism_config = self.state.prism_configs_content[0]
+        
+        # Extract linking_mode from prism file if not provided as argument
+        if linking_mode is None:
+            linking_mode = prism_config.get("_linking_mode", "zip")
+        
+        # Validate linking_mode
+        if linking_mode not in ["zip", "product"]:
+            raise ValueError(f"Invalid linking_mode '{linking_mode}'. Must be 'zip' or 'product'")
+        
         nominal_params, positional_params, scalar_params = self._extract_parameter_types(prism_config)
 
         if nominal_params and positional_params:
@@ -576,6 +604,10 @@ class PrismManager:
             )
         
         print_info(f"Found {len(nominal_params)} nominal, {len(positional_params)} positional, {len(scalar_params)} scalar params")
+        
+        # Print linking mode info for positional params
+        if positional_params:
+            print_info(f"Linking mode: {linking_mode}")
         
         experiments = {}
         
@@ -762,6 +794,31 @@ class PrismManager:
     # =========================================================================
     # Status Management
     # =========================================================================
+
+    def _resolve_source_config_paths(
+        self,
+        project_root: Optional[Union[str, Path]] = None,
+    ) -> tuple[Path, List[Path]]:
+        """Resolve base/prism config paths stored in state.
+
+        Stored paths may be absolute or relative to the project root.
+        """
+        root = Path(project_root) if project_root is not None else Path.cwd()
+
+        base_config_path = Path(self.state.base_config_path)
+        if not base_config_path.is_absolute():
+            base_config_path = root / base_config_path
+
+        prism_config_paths: List[Path] = []
+        for p in (self.state.prism_config_paths or []):
+            if not p:
+                continue
+            ppath = Path(p)
+            if not ppath.is_absolute():
+                ppath = root / ppath
+            prism_config_paths.append(ppath)
+
+        return base_config_path, prism_config_paths
     
     def reset_experiment(self, key: str):
         """Reset an experiment to PENDING status."""
@@ -780,6 +837,19 @@ class PrismManager:
         """Reset all experiments to PENDING status."""
         for key in self.state.experiments.keys():
             self.reset_experiment(key)
+
+    def restart_study(self):
+        """Reset all experiments to PENDING, preserving metrics.
+
+        This matches the TUI's "restart" semantics: clear timing/error info,
+        but do not wipe metrics.
+        """
+        for exp in self.state.experiments.values():
+            exp.status = ExperimentStatus.PENDING
+            exp.started_at = None
+            exp.completed_at = None
+            exp.error_message = None
+        self._save_state()
     
     def reset_failed(self):
         """Reset only failed experiments to PENDING."""
@@ -813,6 +883,39 @@ class PrismManager:
             exp.status = ExperimentStatus.RUNNING
             exp.started_at = datetime.now().isoformat()
             self._save_state()
+
+    def rebuild(self, project_root: Optional[Union[str, Path]] = None, linking_mode: str = "zip") -> "PrismManager":
+        """Delete and recreate the study from the original configs.
+
+        This re-expands the sweep using the base/prism config paths stored in state,
+        and writes the new canonical state file (.study.json).
+        """
+        base_config_path, prism_config_paths = self._resolve_source_config_paths(project_root=project_root)
+
+        # Validate configs still exist
+        if not base_config_path.exists():
+            raise FileNotFoundError(f"Original base config not found: {base_config_path}")
+        for p in prism_config_paths:
+            if not p.exists():
+                raise FileNotFoundError(f"Original prism config not found: {p}")
+
+        # Delete existing study state
+        delete_study(
+            study_name=self.study_name,
+            output_dir=self.output_dir,
+            delete_artifacts_dir=False,
+        )
+
+        # Recreate manager + expand all keys
+        new_manager = PrismManager(
+            base_config_path=base_config_path,
+            prism_config_path=prism_config_paths or None,
+            study_name=self.study_name,
+            output_dir=self.output_dir,
+        )
+        available_keys = new_manager.get_available_keys()
+        new_manager.expand_configs(prism_keys=available_keys, linking_mode=linking_mode)
+        return new_manager
     
     # =========================================================================
     # Execution
@@ -1003,12 +1106,72 @@ class PrismManager:
 # Convenience Functions
 # =========================================================================
 
+def _canonical_study_state_path(output_dir: Union[str, Path], study_name: str) -> Path:
+    return Path(output_dir) / f"{study_name}{STUDY_STATE_EXTENSION}"
+
+
+def find_study_state_file(study_name: str, output_dir: Union[str, Path]) -> Optional[Path]:
+    """Find a study state file by study name (canonical: .study.json only)."""
+    output_dir = Path(output_dir)
+    if not output_dir.exists():
+        return None
+
+    # Direct match
+    canonical = _canonical_study_state_path(output_dir, study_name)
+    if canonical.exists():
+        return canonical
+
+    # Search in subdirectories
+    for p in output_dir.glob(f"**/{study_name}{STUDY_STATE_EXTENSION}"):
+        return p
+
+    # Partial match (last resort)
+    for p in output_dir.glob(f"**/*{study_name}*{STUDY_STATE_EXTENSION}"):
+        return p
+
+    return None
+
+
+def study_exists(study_name: str, output_dir: Union[str, Path]) -> bool:
+    return find_study_state_file(study_name=study_name, output_dir=output_dir) is not None
+
+
+def delete_study(
+    study_name: str,
+    output_dir: Union[str, Path],
+    delete_artifacts_dir: bool = False,
+) -> List[Path]:
+    """Delete a study state file (and optionally its artifacts directory).
+
+    Returns a list of deleted paths.
+    """
+    output_dir = Path(output_dir)
+    deleted: List[Path] = []
+
+    canonical = _canonical_study_state_path(output_dir, study_name)
+    for p in [canonical]:
+        try:
+            if p.exists() and p.is_file():
+                p.unlink()
+                deleted.append(p)
+        except Exception:
+            continue
+
+    if delete_artifacts_dir:
+        artifacts_dir = output_dir / study_name
+        if artifacts_dir.exists() and artifacts_dir.is_dir():
+            import shutil
+            shutil.rmtree(artifacts_dir)
+            deleted.append(artifacts_dir)
+
+    return deleted
+
 def load_study(state_file: Union[str, Path]) -> PrismManager:
     """
-    Load an existing study from a .prism state file.
+    Load an existing study from a study state file (canonical: .study.json).
     
     Args:
-        state_file: Path to the .prism state file
+        state_file: Path to the state file
     
     Returns:
         PrismManager instance
@@ -1022,15 +1185,37 @@ def load_study(state_file: Union[str, Path]) -> PrismManager:
     
     state = PrismState.from_dict(data)
     
+    canonical_path = _canonical_study_state_path(state_file.parent, state.study_name)
+
     manager = PrismManager(
         base_config_path=state.base_config_path,
         prism_config_path=state.prism_config_paths or None,
         study_name=state.study_name,
         output_dir=state_file.parent,
+        state_file_path=canonical_path,
+        load_state=False,
     )
     manager.state = state
-    
+
+    # Reset any RUNNING experiments to PENDING (interrupted runs)
+    running_count = 0
+    for exp in manager.state.experiments.values():
+        if exp.status == ExperimentStatus.RUNNING:
+            exp.status = ExperimentStatus.PENDING
+            exp.started_at = None
+            running_count += 1
+    if running_count > 0:
+        manager._save_state(manager.state)
+
     return manager
+
+
+def load_study_by_name(study_name: str, output_dir: Union[str, Path]) -> PrismManager:
+    """Load a study by name from an output directory."""
+    state_file = find_study_state_file(study_name=study_name, output_dir=output_dir)
+    if state_file is None:
+        raise FileNotFoundError(f"Study '{study_name}' not found in {output_dir}")
+    return load_study(state_file)
 
 
 def list_studies(output_dir: Union[str, Path]) -> List[Dict[str, Any]]:
@@ -1038,7 +1223,7 @@ def list_studies(output_dir: Union[str, Path]) -> List[Dict[str, Any]]:
     List all studies in an output directory.
     
     Args:
-        output_dir: Directory to search for .prism files
+        output_dir: Directory to search for .study.json files
     
     Returns:
         List of study info dictionaries
@@ -1049,7 +1234,18 @@ def list_studies(output_dir: Union[str, Path]) -> List[Dict[str, Any]]:
     if not output_dir.exists():
         return studies
     
-    for prism_file in output_dir.glob("**/*.prism"):
+    files: List[Path] = list(output_dir.glob(f"**/*{STUDY_STATE_EXTENSION}"))
+
+    # De-duplicate
+    seen: set[str] = set()
+    unique_files: List[Path] = []
+    for f in files:
+        fp = str(f.resolve())
+        if fp not in seen:
+            seen.add(fp)
+            unique_files.append(f)
+
+    for prism_file in unique_files:
         try:
             with open(prism_file) as f:
                 data = json.load(f)
@@ -1059,15 +1255,21 @@ def list_studies(output_dir: Union[str, Path]) -> List[Dict[str, Any]]:
             for exp in experiments.values():
                 status = exp.get("status", "PENDING")
                 status_counts[status] = status_counts.get(status, 0) + 1
-            
+
             studies.append({
-                "name": data.get("study_name", prism_file.stem),
+                "name": data.get("study_name", prism_file.name.split(".study")[0]),
                 "path": str(prism_file),
                 "total": len(experiments),
-                **status_counts,
+                "pending": status_counts["PENDING"],
+                "running": status_counts["RUNNING"],
+                "done": status_counts["DONE"],
+                "failed": status_counts["FAILED"],
+                "base_config": data.get("base_config_path", ""),
+                "prism_configs": data.get("prism_config_paths", []),
                 "updated_at": data.get("updated_at", ""),
             })
         except Exception:
             continue
-    
+
+    studies.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
     return studies

@@ -487,10 +487,6 @@ class Project:
         return self.config.get_resolved_paths().prism_configs_dir
     
     @property
-    def studies_dir(self) -> Path:
-        """Alias for prism_configs_dir for backward compatibility."""
-        return self.prism_configs_dir
-    
     def list_configs(self) -> List[Path]:
         """List all configuration files in the configs directory."""
         configs_dir = self.config.project_root / self.config.paths.configs_dir
@@ -521,12 +517,12 @@ class Project:
         return sorted(set(configs))
     
     def list_studies(self) -> List[Path]:
-        """List all existing study (.prism) files in output directory."""
+        """List all existing study (.study.json) files in output directory."""
         output_dir = self.config.project_root / self.config.paths.output_dir
         if not output_dir.exists():
             return []
-        
-        return sorted(output_dir.glob("**/*.prism"))
+
+        return sorted(output_dir.glob("**/*.study.json"))
     
     def get_train_command(self, config_path: Union[str, Path]) -> List[str]:
         """

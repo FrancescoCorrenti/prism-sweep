@@ -36,7 +36,13 @@ except ImportError:
     print("⚠️  'rich' package not found. Install it with: pip install rich")
     sys.exit(1)
 
-from .manager import PrismManager, ExperimentStatus
+from .manager import (
+    PrismManager,
+    ExperimentStatus,
+    list_studies as list_studies_state,
+    study_exists,
+    delete_study,
+)
 from .project import Project, find_project, ProjectNotFoundError
 from .executor import Executor
 
@@ -126,7 +132,6 @@ class MenuAction(Enum):
     DIFF_CONFIGS = "diff_configs"
     MARK_DONE = "mark_done"
     MARK_FAILED = "mark_failed"
-    RESTART_STUDY = "restart_study"
     RESET_STUDY = "reset_study"
     EXPORT_CONFIG = "export_config"
     
@@ -230,45 +235,29 @@ class PrismTUI:
         
     def get_studies(self) -> List[StudyInfo]:
         """Get list of all existing PRISM studies."""
-        studies = []
-        
         if not self.project:
-            return studies
-            
+            return []
+
         output_dir = self.project.config.get_resolved_paths().output_dir
-        if not output_dir.exists():
-            return studies
-        
-        for prism_file in output_dir.glob("**/*.prism"):
-            try:
-                with open(prism_file) as f:
-                    data = json.load(f)
-                
-                experiments = data.get("experiments", {})
-                status_counts = {"PENDING": 0, "RUNNING": 0, "DONE": 0, "FAILED": 0}
-                for exp in experiments.values():
-                    status = exp.get("status", "PENDING")
-                    status_counts[status] = status_counts.get(status, 0) + 1
-                
-                prism_paths = data.get("prism_config_paths", [])
-                
-                studies.append(StudyInfo(
-                    name=data.get("study_name", prism_file.stem),
-                    path=prism_file,
-                    total=len(experiments),
-                    pending=status_counts["PENDING"],
-                    done=status_counts["DONE"],
-                    failed=status_counts["FAILED"],
-                    running=status_counts["RUNNING"],
-                    base_config=data.get("base_config_path", ""),
-                    prism_configs=prism_paths,
-                    updated_at=data.get("updated_at", "")
-                ))
-            except Exception:
-                continue
-        
-        # Sort by updated_at descending
-        studies.sort(key=lambda x: x.updated_at, reverse=True)
+        rows = list_studies_state(output_dir)
+
+        studies: List[StudyInfo] = []
+        for row in rows:
+            studies.append(
+                StudyInfo(
+                    name=row.get("name", ""),
+                    path=Path(row.get("path", "")),
+                    total=int(row.get("total", 0)),
+                    pending=int(row.get("pending", 0)),
+                    done=int(row.get("done", 0)),
+                    failed=int(row.get("failed", 0)),
+                    running=int(row.get("running", 0)),
+                    base_config=row.get("base_config", ""),
+                    prism_configs=list(row.get("prism_configs", []) or []),
+                    updated_at=row.get("updated_at", ""),
+                )
+            )
+
         return studies
     
     def get_prism_config_files(self) -> List[Path]:
@@ -309,9 +298,9 @@ class PrismTUI:
             Selected option key
         """
         table = Table(title=title, box=box.ROUNDED, show_header=False, padding=(0, 2))
-        table.add_column("No.", style="cyan bold", width=4)
-        table.add_column("Option", style="white bold", width=25)
-        table.add_column("Description", style="dim")
+        table.add_column("No.", style="cyan bold", width=4, justify="right", no_wrap=True)
+        table.add_column("Option", style="white bold", width=25, no_wrap=True)
+        table.add_column("Description", style="dim", width=55, no_wrap=True)
         
         for i, (key, label, desc) in enumerate(options, 1):
             table.add_row(f"[{i}]", label, desc)
@@ -500,7 +489,7 @@ class PrismTUI:
             return None
         
         options = [(k, k, f"Status: {v.status.value}") for k, v in filtered.items()]
-        options.append(("back", "← Back", "Return to study menu"))
+        options.append(("back", "", "Return to study menu"))
         
         key = self.print_menu(options, title="Select Experiment")
         return key if key not in ("back", "quit") else None
@@ -597,7 +586,7 @@ class PrismTUI:
         # Step 1: Study name
         self.console.print(Panel(
             "Choose a name for your study.\n"
-            "This will be used for the .prism file.",
+            "This will be used for the .study.json file.",
             title="Step 1/3: Study Name",
             border_style="cyan"
         ))
@@ -608,10 +597,11 @@ class PrismTUI:
             return None
         
         # Check if exists
-        existing = self.project.config.get_resolved_paths().output_dir / f"{study_name}.prism"
-        if existing.exists():
+        output_dir = self.project.config.get_resolved_paths().output_dir
+        if study_exists(study_name, output_dir):
             if not Confirm.ask(f"[yellow]Study '{study_name}' already exists. Overwrite?[/yellow]"):
                 return None
+            delete_study(study_name=study_name, output_dir=output_dir)
         
         # Step 2: Base config
         self.console.print()
@@ -631,7 +621,7 @@ class PrismTUI:
         options = [(str(i), c.name, str(c.relative_to(self.project.config.project_root))) 
                    for i, c in enumerate(base_configs)]
         options.append(("custom", "📝 Custom path", "Enter a custom path"))
-        options.append(("back", "← Back", "Cancel"))
+        options.append(("back", "", "Cancel"))
         
         choice = self.print_menu(options, title="Available Base Configs")
         
@@ -674,7 +664,7 @@ class PrismTUI:
             options.append(("skip", "⏭️  Skip", "No prism sweep (single experiment from base config)"))
             options.append(("done", "✅ Done", "Finish selection"))
             options.append(("custom", "📝 Custom path", "Enter a custom path"))
-            options.append(("back", "← Back", "Cancel"))
+            options.append(("back", "", "Cancel"))
             
             choice = self.print_menu(options, title="Available Prism Configs")
             
@@ -789,18 +779,17 @@ class PrismTUI:
             self.print_study_status(self.current_study, self.current_manager)
             
             options = [
-                ("execute_next", "▶️ Execute Next", "Run the first pending experiment"),
-                ("execute_all", "⏩ Execute All", "Run all pending experiments"),
+                ("execute_next", "🎬 Execute Next", "Run the first pending experiment"),
+                ("execute_all", "🎬 Execute All", "Run all pending experiments"),
                 ("execute_key", "🎯 Execute Specific", "Run a specific experiment by key"),
-                ("retry_failed", "🔄 Retry Failed", "Reset and re-run failed experiments"),
-                ("show_config", "📝 View Config", "Display config for an experiment"),
+                ("retry_failed", "❎ Retry Failed", "Reset and re-run failed experiments"),
+                ("show_config", "👀 View Config", "Display config for an experiment"),
                 ("diff_configs", "🔍 Compare Configs", "Show diff between two experiments"),
                 ("mark_done", "✅ Mark Done", "Manually mark experiment as done"),
                 ("mark_failed", "❌ Mark Failed", "Manually mark experiment as failed"),
-                ("restart_study", "🔃 Restart Study", "Restart all experiments, setting them to pending"),
-                ("reset_study", "♻️ Reset Study", "Reloads all configs and resets experiments to pending"),
+                ("reset_study", "🔃 Reset Study", "Reloads all configs and resets experiments to pending"),
                 ("export_config", "💾 Export Config", "Export experiment config to file"),
-                ("back", "← Back", "Return to main menu"),
+                ("back", "​", "Return to main menu"),
             ]
             
             action = self.print_menu(options, title="Study Actions")
@@ -845,100 +834,33 @@ class PrismTUI:
             elif action == "mark_done":
                 exp_key = self.select_experiment(self.current_manager, negative_filter=ExperimentStatus.DONE)
                 if exp_key:
-                    from datetime import datetime
-                    self.current_manager.state.experiments[exp_key].status = ExperimentStatus.DONE
-                    self.current_manager.state.experiments[exp_key].completed_at = datetime.now().isoformat()
-                    self.current_manager._save_state()
+                    self.current_manager.mark_done(exp_key)
                     self.console.print(f"[green]✅ Marked '{exp_key}' as DONE[/green]")
                     Prompt.ask("\n[dim]Press Enter to continue[/dim]")
                     
             elif action == "mark_failed":
                 exp_key = self.select_experiment(self.current_manager, negative_filter=ExperimentStatus.FAILED)
                 if exp_key:
-                    from datetime import datetime
-                    self.current_manager.state.experiments[exp_key].status = ExperimentStatus.FAILED
-                    self.current_manager.state.experiments[exp_key].completed_at = datetime.now().isoformat()
-                    self.current_manager.state.experiments[exp_key].error_message = "Manually marked as failed"
-                    self.current_manager._save_state()
+                    self.current_manager.mark_failed(exp_key, error_message="Manually marked as failed")
                     self.console.print(f"[yellow]❌ Marked '{exp_key}' as FAILED[/yellow]")
                     Prompt.ask("\n[dim]Press Enter to continue[/dim]")
-                    
-            elif action == "restart_study":
-                if Confirm.ask("[red]⚠️  Reset ALL experiments to PENDING?[/red]"):
-                    for exp in self.current_manager.state.experiments.values():
-                        exp.status = ExperimentStatus.PENDING
-                        exp.started_at = None
-                        exp.completed_at = None
-                        exp.error_message = None
-                    self.current_manager._save_state()
-                    self.console.print("[green]✅ All experiments reset to PENDING[/green]")
-                    Prompt.ask("\n[dim]Press Enter to continue[/dim]")
-                    
+                                     
             elif action == "reset_study":
                 if Confirm.ask("[red]⚠️  Reset the study completely? This will delete and recreate the experiment.[/red]"):
                     try:
-                        # Get original config paths from the current manager state
-                        base_config_path_str = self.current_manager.state.base_config_path
-                        prism_config_paths_raw = self.current_manager.state.prism_config_paths or []
-                        study_name = self.current_manager.state.study_name
-                        output_dir = self.current_study.path.parent
-                        
-                        # Resolve paths relative to project root if they're not absolute
                         project_root = self.project.config.project_root if self.project else Path.cwd()
-                        
-                        base_config_path = Path(base_config_path_str)
-                        if not base_config_path.is_absolute():
-                            base_config_path = project_root / base_config_path
-                        
-                        prism_config_paths = []
-                        for p in prism_config_paths_raw:
-                            if p:
-                                ppath = Path(p)
-                                if not ppath.is_absolute():
-                                    ppath = project_root / ppath
-                                prism_config_paths.append(ppath)
-                        
-                        # Validate original configs still exist
-                        configs_valid = True
-                        if not base_config_path.exists():
-                            self.console.print(f"[red]❌ Original base config not found: {base_config_path}[/red]")
-                            self.console.print(f"[dim]   (stored path: {base_config_path_str}, project root: {project_root})[/dim]")
-                            configs_valid = False
-                        
-                        for pcp in prism_config_paths:
-                            if not pcp.exists():
-                                self.console.print(f"[red]❌ Original prism config not found: {pcp}[/red]")
-                                configs_valid = False
-                        
-                        if not configs_valid:
-                            Prompt.ask("\n[dim]Press Enter to continue[/dim]")
-                            continue
-                        
-                        # Delete the old state file
-                        self.console.print("[yellow]🔄 Removing old state file to rebuild sweep...[/yellow]")
-                        old_prism_path = self.current_study.path
-                        old_prism_path.unlink()
-                        
-                        # Recreate the manager and expand configs
-                        self.current_manager = PrismManager(
-                            base_config_path=base_config_path,
-                            prism_config_path=prism_config_paths,
-                            study_name=study_name,
-                            output_dir=output_dir,
-                        )
-                        
-                        # Get available keys and expand
-                        available_keys = self.current_manager.get_available_keys()
-                        self.current_manager.expand_configs(prism_keys=available_keys, linking_mode="zip")
+                        self.current_manager = self.current_manager.rebuild(project_root=project_root, linking_mode="zip")
                         
                         # Update current_study reference to reflect the new state
                         studies = self.get_studies()
                         for s in studies:
-                            if s.name == study_name:
+                            if s.name == self.current_manager.study_name:
                                 self.current_study = s
                                 break
                         
-                        self.console.print(f"[green]✅ Study '{study_name}' reset and rebuilt with {len(self.current_manager.state.experiments)} experiments[/green]")
+                        self.console.print(
+                            f"[green]✅ Study '{self.current_manager.study_name}' reset and rebuilt with {len(self.current_manager.state.experiments)} experiments[/green]"
+                        )
                     except Exception as e:
                         self.console.print(f"[red]❌ Failed to reset study: {e}[/red]")
                     Prompt.ask("\n[dim]Press Enter to continue[/dim]")
@@ -998,14 +920,14 @@ class PrismTUI:
         options = [
             ("find", "🔍 Find Project", "Search for prism.project.yaml in current directory or parents"),
             ("create", "✨ Create Project", "Create a new prism.project.yaml"),
-            ("path", "📁 Open Path", "Open a specific project by path"),
+            ("path", "� Open Path", "Open a specific project by path"),
         ]
         
         # Add recent projects as options
         for i, p in enumerate(valid_recent[:5]):
             options.append((f"recent_{i}", f"📂 {Path(p).name}", str(p)))
         
-        options.append(("quit", "🚪 Quit", "Exit"))
+        options.append(("quit", "", "Exit"))
         
         action = self.print_menu(options, title="Project Setup")
         
@@ -1160,10 +1082,10 @@ metrics:
             options = [
                 ("select", "📂 Select Study", "Open an existing study"),
                 ("create", "✨ Create Study", "Create a new parameter sweep"),
-                ("delete", "🗑️  Delete Study", "Remove a study file"),
+                ("delete", "❌ Delete Study", "Remove a study file"),
                 ("refresh", "🔄 Refresh", "Refresh the studies list"),
                 ("project", "📁 Change Project", "Load a different project"),
-                ("quit", "🚪 Quit", "Exit the TUI"),
+                ("quit", "", "Exit the TUI"),
             ]
             
             action = self.print_menu(options, title="Main Menu")
@@ -1253,16 +1175,14 @@ metrics:
                     if 1 <= choice <= len(studies):
                         study = studies[choice - 1]
                         if Confirm.ask(f"[red]⚠️  Delete study '{study.name}'?[/red]"):
-                            study.path.unlink()
-                            self.console.print(f"[green]✅ Deleted: {study.path}[/green]")
-                            
-                            # Also delete artifacts?
-                            artifacts_dir = study.path.parent / study.name
-                            if artifacts_dir.exists() and artifacts_dir.is_dir():
-                                if Confirm.ask(f"[yellow]Also delete artifacts directory?[/yellow]"):
-                                    import shutil
-                                    shutil.rmtree(artifacts_dir)
-                                    self.console.print(f"[green]✅ Deleted: {artifacts_dir}[/green]")
+                            delete_artifacts = Confirm.ask(f"[yellow]Also delete artifacts directory?[/yellow]")
+                            deleted = delete_study(
+                                study_name=study.name,
+                                output_dir=study.path.parent,
+                                delete_artifacts_dir=delete_artifacts,
+                            )
+                            for p in deleted:
+                                self.console.print(f"[green]✅ Deleted: {p}[/green]")
                             
                             Prompt.ask("\n[dim]Press Enter to continue[/dim]")
                 except Exception:

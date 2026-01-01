@@ -37,12 +37,18 @@ Usage:
 
 import argparse
 import sys
-import json
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from .utils import PrintContext
-from .manager import PrismManager, ExperimentStatus
+from .manager import (
+    PrismManager,
+    ExperimentStatus,
+    list_studies as list_studies_state,
+    load_study_by_name as load_study_by_name_state,
+    study_exists,
+    delete_study,
+)
 from .project import Project, find_project, ProjectNotFoundError
 from .executor import Executor
 
@@ -69,49 +75,8 @@ def print_progress_bar(done: int, total: int, width: int = 30) -> str:
 
 
 def list_existing_studies(output_dir: Path) -> List[Dict[str, Any]]:
-    """
-    List all existing .prism study files in the output directory.
-    
-    Args:
-        output_dir: Directory to search for .prism files
-        
-    Returns:
-        List of study info dicts
-    """
-    studies = []
-    
-    if not output_dir.exists():
-        return studies
-    
-    # Search for .prism files
-    for prism_file in output_dir.glob("**/*.prism"):
-        try:
-            with open(prism_file) as f:
-                data = json.load(f)
-            
-            # Count statuses
-            experiments = data.get("experiments", {})
-            status_counts = {"PENDING": 0, "RUNNING": 0, "DONE": 0, "FAILED": 0}
-            for exp in experiments.values():
-                status = exp.get("status", "PENDING")
-                status_counts[status] = status_counts.get(status, 0) + 1
-            
-            studies.append({
-                "name": data.get("study_name", prism_file.stem),
-                "path": str(prism_file),
-                "total": len(experiments),
-                "pending": status_counts["PENDING"],
-                "done": status_counts["DONE"],
-                "failed": status_counts["FAILED"],
-                "running": status_counts["RUNNING"],
-                "base_config": data.get("base_config_path", ""),
-                "prism_configs": data.get("prism_config_paths", []),
-                "updated_at": data.get("updated_at", "")
-            })
-        except Exception:
-            continue
-    
-    return studies
+    """List studies (delegates to manager as source of truth)."""
+    return list_studies_state(output_dir)
 
 
 def print_studies_list(studies: List[Dict[str, Any]]):
@@ -120,27 +85,36 @@ def print_studies_list(studies: List[Dict[str, Any]]):
         print_warning("No existing studies found.")
         print_info("Create a new study with: prism create --name <name> --config <base.yaml> --prism <sweep.yaml>")
         return
-    
+
     print_info(f"\n{'='*80}")
     print_info("EXISTING PRISM STUDIES")
     print_info(f"{'='*80}\n")
-    
+
     for i, study in enumerate(studies, 1):
-        progress_bar = print_progress_bar(study['done'], study['total'])
-        status_emoji = "✅" if study['pending'] == 0 and study['failed'] == 0 else "⏳" if study['pending'] > 0 else "❌"
-        
-        print_info(f"{i}. {status_emoji} {study['name']}")
-        print_info(f"   {progress_bar}  ({study['done']}/{study['total']} done)")
-        if study['pending'] > 0:
-            print_info(f"   ⏳ {study['pending']} pending")
-        if study['failed'] > 0:
-            print_warning(f"   ❌ {study['failed']} failed")
-        if study['running'] > 0:
-            print_info(f"   🔄 {study['running']} running")
-        print_file(f"   📁 {study['path']}")
-        print_info(f"   🕐 Last updated: {study['updated_at']}")
+        done = int(study.get("done", 0))
+        total = int(study.get("total", 0))
+        pending = int(study.get("pending", 0))
+        failed = int(study.get("failed", 0))
+        running = int(study.get("running", 0))
+
+        progress_bar = print_progress_bar(done, total)
+        status_emoji = "✅" if pending == 0 and failed == 0 else "⏳" if pending > 0 else "❌"
+
+        print_info(f"{i}. {status_emoji} {study.get('name', '')}")
+        print_info(f"   {progress_bar}  ({done}/{total} done)")
+        if pending > 0:
+            print_info(f"   ⏳ {pending} pending")
+        if failed > 0:
+            print_warning(f"   ❌ {failed} failed")
+        if running > 0:
+            print_info(f"   🔄 {running} running")
+
+        path = study.get("path", "")
+        if path:
+            print_file(f"   📁 {path}")
+        print_info(f"   🕐 Last updated: {study.get('updated_at', '')}")
         print_info("")
-    
+
     print_info(f"{'='*80}")
     print_info("Quick commands:")
     print_info("  Resume:      prism run --study <name> --next")
@@ -148,34 +122,6 @@ def print_studies_list(studies: List[Dict[str, Any]]):
     print_info("  Reset:       prism reset <name>")
     print_info("  Retry fails: prism retry <name>")
     print_info(f"{'='*80}\n")
-
-
-def load_study_by_name(study_name: str, output_dir: Path) -> Optional[Path]:
-    """
-    Find a study .prism file by name.
-    
-    Args:
-        study_name: Name of the study to find
-        output_dir: Directory to search
-        
-    Returns:
-        Path to .prism file if found, None otherwise
-    """
-    # Direct match
-    direct_path = output_dir / f"{study_name}.prism"
-    if direct_path.exists():
-        return direct_path
-    
-    # Search in subdirectories
-    for prism_file in output_dir.glob(f"**/{study_name}.prism"):
-        return prism_file
-    
-    # Partial match
-    for prism_file in output_dir.glob("**/*.prism"):
-        if study_name in prism_file.stem:
-            return prism_file
-    
-    return None
 
 
 def show_config_diff(config1: Dict[str, Any], config2: Dict[str, Any], key1: str, key2: str):
@@ -266,27 +212,14 @@ def cmd_list(args, project: Project):
 def cmd_status(args, project: Project):
     """Show status of a study."""
     study_name = args.study
-    prism_file = load_study_by_name(study_name, project.output_dir)
-    
-    if not prism_file:
+
+    try:
+        manager = load_study_by_name_state(study_name, project.output_dir)
+    except FileNotFoundError:
         print_error(f"Study '{study_name}' not found")
         print_info("Use 'prism list' to see available studies")
         sys.exit(1)
-    
-    # Load study
-    with open(prism_file) as f:
-        study_data = json.load(f)
-    
-    base_config_path = Path(study_data.get("base_config_path", ""))
-    prism_config_paths = study_data.get("prism_config_paths", [])
-    
-    manager = PrismManager(
-        base_config_path=base_config_path,
-        prism_config_path=[Path(p) for p in prism_config_paths if p],
-        study_name=study_name,
-        output_dir=prism_file.parent,
-    )
-    
+
     manager.print_summary()
 
 
@@ -308,19 +241,20 @@ def cmd_create(args, project: Project):
     resolved_prism = []
     for pc in prism_configs:
         if not pc.is_absolute():
-            if (project.studies_dir / pc).exists():
-                pc = project.studies_dir / pc
+            if (project.prism_configs_dir / pc).exists():
+                pc = project.prism_configs_dir / pc
             elif not pc.exists():
                 print_error(f"Prism config not found: {pc}")
                 sys.exit(1)
         resolved_prism.append(pc)
     
     # Check if study exists
-    existing = project.output_dir / f"{study_name}.prism"
-    if existing.exists() and not args.force:
-        print_error(f"Study '{study_name}' already exists")
-        print_info("Use --force to overwrite")
-        sys.exit(1)
+    if study_exists(study_name, project.output_dir):
+        if not args.force:
+            print_error(f"Study '{study_name}' already exists")
+            print_info("Use --force to overwrite")
+            sys.exit(1)
+        delete_study(study_name=study_name, output_dir=project.output_dir)
     
     # Create manager
     print_progress(f"✨ Creating study: {study_name}")
@@ -351,22 +285,12 @@ def cmd_create(args, project: Project):
 def cmd_run(args, project: Project, executor: Executor):
     """Run experiments."""
     study_name = args.study
-    prism_file = load_study_by_name(study_name, project.output_dir)
-    
-    if not prism_file:
+
+    try:
+        manager = load_study_by_name_state(study_name, project.output_dir)
+    except FileNotFoundError:
         print_error(f"Study '{study_name}' not found")
         sys.exit(1)
-    
-    # Load study
-    with open(prism_file) as f:
-        study_data = json.load(f)
-    
-    manager = PrismManager(
-        base_config_path=Path(study_data.get("base_config_path", "")),
-        prism_config_path=[Path(p) for p in study_data.get("prism_config_paths", []) if p],
-        study_name=study_name,
-        output_dir=prism_file.parent,
-    )
     
     # Handle dry run - just show what would happen
     if args.dry_run:
@@ -417,72 +341,33 @@ def cmd_run(args, project: Project, executor: Executor):
 def cmd_reset(args, project: Project):
     """Reset a study."""
     study_name = args.study
-    prism_file = load_study_by_name(study_name, project.output_dir)
-    
-    if not prism_file:
+    try:
+        manager = load_study_by_name_state(study_name, project.output_dir)
+    except FileNotFoundError:
         print_error(f"Study '{study_name}' not found")
         sys.exit(1)
-    
-    # Load study data to get original config paths
-    with open(prism_file) as f:
-        study_data = json.load(f)
-    
-    base_config_path = Path(study_data.get("base_config_path", ""))
-    prism_config_paths = [Path(p) for p in study_data.get("prism_config_paths", []) if p]
-    
-    # Validate configs exist
-    if not base_config_path.exists():
-        print_error(f"Base config not found: {base_config_path}")
-        sys.exit(1)
-    
-    for pcp in prism_config_paths:
-        if not pcp.exists():
-            print_error(f"Prism config not found: {pcp}")
-            sys.exit(1)
-    
-    # Delete old state
+
     print_warning(f"🔄 Resetting study: {study_name}")
-    prism_file.unlink()
-    
-    # Recreate
-    manager = PrismManager(
-        base_config_path=base_config_path,
-        prism_config_path=prism_config_paths,
-        study_name=study_name,
-        output_dir=prism_file.parent,
-    )
-    
-    available_keys = manager.get_available_keys()
-    manager.expand_configs(prism_keys=available_keys, linking_mode="zip")
-    
+    try:
+        manager = manager.rebuild(project_root=project.config.project_root, linking_mode="zip")
+    except Exception as e:
+        print_error(str(e))
+        sys.exit(1)
+
     print_success(f"✅ Reset '{study_name}' with {len(manager.state.experiments)} experiments")
 
 
 def cmd_retry(args, project: Project, executor: Executor):
     """Retry failed experiments."""
     study_name = args.study
-    prism_file = load_study_by_name(study_name, project.output_dir)
-    
-    if not prism_file:
+
+    try:
+        manager = load_study_by_name_state(study_name, project.output_dir)
+    except FileNotFoundError:
         print_error(f"Study '{study_name}' not found")
         sys.exit(1)
     
-    # Load study
-    with open(prism_file) as f:
-        study_data = json.load(f)
-    
-    manager = PrismManager(
-        base_config_path=Path(study_data.get("base_config_path", "")),
-        prism_config_path=[Path(p) for p in study_data.get("prism_config_paths", []) if p],
-        study_name=study_name,
-        output_dir=prism_file.parent,
-    )
-    
-    # Find failed experiments
-    failed_keys = [
-        k for k, v in manager.state.experiments.items()
-        if v.status == ExperimentStatus.FAILED
-    ]
+    failed_keys = manager.get_failed_experiments()
     
     if not failed_keys:
         print_success("No failed experiments to retry!")
@@ -492,8 +377,11 @@ def cmd_retry(args, project: Project, executor: Executor):
     
     # Reset and execute
     for key in failed_keys:
+        if args.dry_run:
+            print_info(f"Would retry: {key}")
+            continue
         manager.reset_experiment(key)
-        manager.execute_key(key, executor=executor, dry_run=args.dry_run)
+        manager.execute_key(key, executor=executor)
     
     manager.print_summary()
 
@@ -503,21 +391,11 @@ def cmd_show_config(args, project: Project):
     study_name = args.study
     exp_key = args.key
     
-    prism_file = load_study_by_name(study_name, project.output_dir)
-    if not prism_file:
+    try:
+        manager = load_study_by_name_state(study_name, project.output_dir)
+    except FileNotFoundError:
         print_error(f"Study '{study_name}' not found")
         sys.exit(1)
-    
-    # Load study
-    with open(prism_file) as f:
-        study_data = json.load(f)
-    
-    manager = PrismManager(
-        base_config_path=Path(study_data.get("base_config_path", "")),
-        prism_config_path=[Path(p) for p in study_data.get("prism_config_paths", []) if p],
-        study_name=study_name,
-        output_dir=prism_file.parent,
-    )
     
     if exp_key not in manager.state.experiments:
         print_error(f"Experiment '{exp_key}' not found")
@@ -537,20 +415,11 @@ def cmd_diff(args, project: Project):
     study_name = args.study
     key1, key2 = args.keys
     
-    prism_file = load_study_by_name(study_name, project.output_dir)
-    if not prism_file:
+    try:
+        manager = load_study_by_name_state(study_name, project.output_dir)
+    except FileNotFoundError:
         print_error(f"Study '{study_name}' not found")
         sys.exit(1)
-    
-    with open(prism_file) as f:
-        study_data = json.load(f)
-    
-    manager = PrismManager(
-        base_config_path=Path(study_data.get("base_config_path", "")),
-        prism_config_path=[Path(p) for p in study_data.get("prism_config_paths", []) if p],
-        study_name=study_name,
-        output_dir=prism_file.parent,
-    )
     
     if key1 not in manager.state.experiments:
         print_error(f"Experiment '{key1}' not found")
@@ -572,46 +441,29 @@ def cmd_mark(args, project: Project):
     exp_key = args.key
     status = args.status
     
-    prism_file = load_study_by_name(study_name, project.output_dir)
-    if not prism_file:
+    try:
+        manager = load_study_by_name_state(study_name, project.output_dir)
+    except FileNotFoundError:
         print_error(f"Study '{study_name}' not found")
         sys.exit(1)
-    
-    with open(prism_file) as f:
-        study_data = json.load(f)
-    
-    manager = PrismManager(
-        base_config_path=Path(study_data.get("base_config_path", "")),
-        prism_config_path=[Path(p) for p in study_data.get("prism_config_paths", []) if p],
-        study_name=study_name,
-        output_dir=prism_file.parent,
-    )
     
     if exp_key not in manager.state.experiments:
         print_error(f"Experiment '{exp_key}' not found")
         sys.exit(1)
     
-    from datetime import datetime
-    
     if status == "done":
-        manager.state.experiments[exp_key].status = ExperimentStatus.DONE
-        manager.state.experiments[exp_key].completed_at = datetime.now().isoformat()
+        manager.mark_done(exp_key)
         print_success(f"✅ Marked '{exp_key}' as DONE")
     else:
-        manager.state.experiments[exp_key].status = ExperimentStatus.FAILED
-        manager.state.experiments[exp_key].completed_at = datetime.now().isoformat()
-        manager.state.experiments[exp_key].error_message = "Manually marked as failed"
+        manager.mark_failed(exp_key, error_message="Manually marked as failed")
         print_warning(f"❌ Marked '{exp_key}' as FAILED")
-    
-    manager._save_state()
 
 
 def cmd_delete(args, project: Project):
     """Delete a study."""
     study_name = args.study
-    prism_file = load_study_by_name(study_name, project.output_dir)
-    
-    if not prism_file:
+
+    if not study_exists(study_name, project.output_dir):
         print_error(f"Study '{study_name}' not found")
         sys.exit(1)
     
@@ -621,15 +473,16 @@ def cmd_delete(args, project: Project):
             print_info("Aborted")
             return
     
-    prism_file.unlink()
-    print_success(f"Deleted: {prism_file}")
-    
-    if args.artifacts:
-        import shutil
-        artifacts_dir = prism_file.parent / study_name
-        if artifacts_dir.exists():
-            shutil.rmtree(artifacts_dir)
-            print_success(f"Deleted artifacts: {artifacts_dir}")
+    deleted = delete_study(
+        study_name=study_name,
+        output_dir=project.output_dir,
+        delete_artifacts_dir=bool(args.artifacts),
+    )
+    if not deleted:
+        print_warning("Nothing deleted")
+    else:
+        for p in deleted:
+            print_success(f"Deleted: {p}")
 
 
 def cmd_tui(args, project: Optional[Project]):
