@@ -232,12 +232,13 @@ print(json.dumps({"loss": 0.123, "accuracy": 0.95}))
 ## Sweep Definition Syntax
 
 Notes:
-- PRISM only treats these as sweep syntax:
+PRISM only treats these as sweep syntax:
  - `$`-named experiments 
  - lists of values
  - `_type`/`_*` sweep definitions.
-- Do not mix `$`-named experiments with positional sweeps (lists / `_type`) in the same `.prism.yaml`. If you need both, split them into multiple prism files.
-- All overridden parameter paths must already exist in the base config (helps catch typos early).
+
+Do not mix `$`-named experiments with positional sweeps (lists / `_type`) in the same `.prism.yaml`. If you need both, split them into multiple prism files.
+All overridden parameter paths must already exist in the base config (helps catch typos early).
 
 ### Named Experiments (`$` notation)
 
