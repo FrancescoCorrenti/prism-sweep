@@ -41,7 +41,9 @@ After installation, you can use `prism_tui` or `prism` commands from anywhere.
 The easiest way to use PRISM is through the interactive terminal interface:
 
 <!-- liv gif : -->
-![prism_tui_demo](docs\live-tutorial.gif)
+<p align="center">
+  <img src="docs/live-tutorial.gif" style="width:900px;">
+</p>
 
 This example uses this directory structure:
 
@@ -69,6 +71,7 @@ iris-project/
 │   │   │   └── config.yaml
 │   └── kernels.study.json
 └── prism.project.yaml
+```
 
 ### Using the Command Line
 
@@ -233,8 +236,10 @@ PRISM only treats these as sweep syntax:
  - `$`-named experiments 
  - lists of values
  - `_type`/`_*` sweep definitions.
+
 Do not mix `$`-named experiments with positional sweeps (lists / `_type`) in the same `.prism.yaml`. If you need both, split them into multiple prism files.
 All overridden parameter paths must already exist in the base config (helps catch typos early).
+
 ### Named Experiments (`$` notation)
 
 ```yaml
