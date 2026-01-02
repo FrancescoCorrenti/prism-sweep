@@ -71,6 +71,7 @@ iris-project/
 │   │   │   └── config.yaml
 │   └── kernels.study.json
 └── prism.project.yaml
+```
 
 ### Using the Command Line
 
