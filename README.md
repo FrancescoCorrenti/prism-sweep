@@ -360,8 +360,6 @@ To specify the linking mode, add `_linking_mode: zip` or `_linking_mode: product
 - `zip` mode: ❌ **Error** - "Positional parameters have different lengths"
 - `product` mode: ✅ **Cartesian product** - All combinations are generated
 
-See [Appendix: Sweep Length Handling](#appendix-sweep-length-handling) for detailed examples.
-
 ### Multiple Files (Cartesian Product)
 
 ```bash
