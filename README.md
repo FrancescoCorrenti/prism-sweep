@@ -41,7 +41,9 @@ After installation, you can use `prism_tui` or `prism` commands from anywhere.
 The easiest way to use PRISM is through the interactive terminal interface:
 
 <!-- liv gif : -->
-![prism_tui_demo](docs\live-tutorial.gif)
+<p align="center">
+  <img src="docs/live-tutorial.gif" style="width:900px;">
+</p>
 
 This example uses this directory structure:
 
