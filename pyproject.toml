@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "prism-sweep"
-version = "0.1.0"
+version = "0.1.1"
 description = "PRISM - Parameter Research & Investigation Sweep Manager"
 readme = "README.md"
 license = {text = "MIT"}

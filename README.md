@@ -229,13 +229,12 @@ print(json.dumps({"loss": 0.123, "accuracy": 0.95}))
 ## Sweep Definition Syntax
 
 Notes:
-- PRISM only treats these as sweep syntax:
+PRISM only treats these as sweep syntax:
  - `$`-named experiments 
  - lists of values
  - `_type`/`_*` sweep definitions.
-- Do not mix `$`-named experiments with positional sweeps (lists / `_type`) in the same `.prism.yaml`. If you need both, split them into multiple prism files.
-- All overridden parameter paths must already exist in the base config (helps catch typos early).
-
+Do not mix `$`-named experiments with positional sweeps (lists / `_type`) in the same `.prism.yaml`. If you need both, split them into multiple prism files.
+All overridden parameter paths must already exist in the base config (helps catch typos early).
 ### Named Experiments (`$` notation)
 
 ```yaml
@@ -263,29 +262,100 @@ learning_rate: [0.01, 0.001, 0.0001]
 - `run_1`: batch_size=32, lr=0.001  
 - `run_2`: batch_size=64, lr=0.0001
 
+**Note:** By default, lists are "zipped" together (paired element-by-element). All lists must have the same length, or PRISM will raise an error. See [Linking Modes](#linking-modes) to use cartesian product instead.
+
 ### Sweep Definitions (Advanced)
 
-```yaml
-# Choice sweep
-optimizer:
-  lr:
-    _type: choice
-    _values: [0.001, 0.01, 0.1]
+PRISM provides powerful sweep syntax using `_type` and related keys:
 
-# Range sweep
+#### Choice Sweep
+```yaml
+# Explicit list of choices
+optimizer:
+  type:
+    _type: choice
+    _values: ["adam", "sgd", "rmsprop"]
+```
+
+Equivalent to `type: ["adam", "sgd", "rmsprop"]`, but more explicit.
+
+#### Range Sweep
+```yaml
+# Numeric range with step
 epochs:
   _type: range
   _min: 10
   _max: 100
   _step: 10
+```
+Generates: `[10, 20, 30, 40, 50, 60, 70, 80, 90, 100]` (inclusive)
 
-# Linspace sweep
+**Key features:**
+- **Inclusive range**: Both `_min` and `_max` are included
+- **Float support**: Works with decimals (e.g., `_min: 0.001, _max: 0.01, _step: 0.001`)
+- **Negative steps**: Use negative `_step` to count backwards (e.g., `_min: 100, _max: 10, _step: -10`)
+
+#### Linspace Sweep
+```yaml
+# Evenly-spaced values between two points
 momentum:
   _type: linspace
   _min: 0.0
   _max: 0.99
   _num: 5
 ```
+Generates: `[0.0, 0.2475, 0.495, 0.7425, 0.99]` (5 evenly-spaced points)
+
+**Use case:** When you want a specific number of values uniformly distributed across a range, regardless of the step size.
+
+#### Nested Sweeps
+```yaml
+# Sweep nested parameters
+model:
+  config:
+    hidden_size:
+      _type: range
+      _min: 128
+      _max: 512
+      _step: 128
+    dropout:
+      _type: linspace
+      _min: 0.1
+      _max: 0.5
+      _num: 3
+```
+
+PRISM automatically handles nested YAML paths (e.g., `model.config.hidden_size`).
+
+#### Linking Modes
+
+When you have **multiple positional sweeps** in a single file, PRISM needs to know how to combine them:
+
+**Zip Mode (default):**
+```yaml
+# All lists must have the same length
+learning_rate: [0.001, 0.01, 0.1]
+weight_decay: [1e-5, 1e-4, 1e-3]
+# Creates 3 experiments: (lr=0.001, wd=1e-5), (0.01, 1e-4), (0.1, 1e-3)
+```
+
+**Product Mode:**
+```yaml
+_linking_mode: product  # Add at top level of prism file
+
+learning_rate: [0.001, 0.01, 0.1]
+weight_decay: [1e-5, 1e-4]
+# Creates 6 experiments: cartesian product
+# (0.001, 1e-5), (0.001, 1e-4), (0.01, 1e-5), (0.01, 1e-4), (0.1, 1e-5), (0.1, 1e-4)
+```
+
+To specify the linking mode, add `_linking_mode: zip` or `_linking_mode: product` at the **top level** of your `.prism.yaml` file.
+
+**When lists have different lengths:**
+- `zip` mode: ❌ **Error** - "Positional parameters have different lengths"
+- `product` mode: ✅ **Cartesian product** - All combinations are generated
+
+See [Appendix: Sweep Length Handling](#appendix-sweep-length-handling) for detailed examples.
 
 ### Multiple Files (Cartesian Product)
 
@@ -296,6 +366,8 @@ prism create --base base.yaml \
              --name model_opt_sweep
 ```
 If `models.yaml` has 3 variations and `optimizers.yaml` has 2, you get 3×2=6 experiments.
+
+**Note:** Multiple prism files are **always** combined using cartesian product, regardless of sweep lengths. The `_linking_mode` parameter only applies within a single file.
 
 ### Complete Example
 
