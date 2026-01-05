@@ -699,6 +699,14 @@ class PrismManager:
         keys_per_file = self._get_keys_per_file()
         params_per_file = [self._extract_parameter_types(cfg) for cfg in prism_configs]
         
+        # Build mapping from keys_per_file index to actual file index
+        # Files with only scalars don't appear in keys_per_file
+        keys_file_indices = []
+        for file_idx, prism_config in enumerate(prism_configs):
+            nominal_params, positional_params, _ = self._extract_parameter_types(prism_config)
+            if nominal_params or positional_params:
+                keys_file_indices.append(file_idx)
+        
         print_info(f"Multi-file mode: {len(prism_configs)} files, cartesian product")
         
         all_combos = list(itertools.product(*keys_per_file))
@@ -712,7 +720,15 @@ class PrismManager:
             compound_key = "_".join(combo)
             merged = copy.deepcopy(base_config)
             
-            for file_idx, key_for_file in enumerate(combo):
+            # First, apply scalars from ALL files (including scalar-only files)
+            for file_idx, (nominal_params, positional_params, scalar_params) in enumerate(params_per_file):
+                for param_path, value in scalar_params.items():
+                    self._assert_path_exists_in_base(base_config, param_path)
+                    self._set_nested_value(merged, param_path, value)
+            
+            # Then, apply nominal/positional params from files that contribute to the combo
+            for combo_idx, key_for_file in enumerate(combo):
+                file_idx = keys_file_indices[combo_idx]
                 nominal_params, positional_params, scalar_params = params_per_file[file_idx]
 
                 if nominal_params and positional_params:
@@ -720,10 +736,6 @@ class PrismManager:
                         "A single .prism.yaml file cannot mix $-named experiments and positional sweeps. "
                         "Split them into multiple prism files if you need both."
                     )
-                
-                for param_path, value in scalar_params.items():
-                    self._assert_path_exists_in_base(base_config, param_path)
-                    self._set_nested_value(merged, param_path, value)
                 
                 if nominal_params:
                     for param_path, param_values in nominal_params.items():
