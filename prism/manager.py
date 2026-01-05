@@ -336,11 +336,12 @@ class PrismManager:
         self._save_json(self.state_file_path, state.to_dict())
     
     def reload_configs(self):
-        """Reload base and prism configs from disk."""
+        """Reload base and prism configs from disk and update experiments."""
         self.state.base_config_content = self._load_yaml(self.base_config_path)
         self.state.prism_configs_content = [
             self._load_yaml(Path(p)) for p in self.state.prism_config_paths
         ]
+        self.expand_configs()
         self._save_state()
         print_success("Reloaded configurations from disk")
     

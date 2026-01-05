@@ -787,6 +787,7 @@ class PrismTUI:
                 ("diff_configs", "🔍 Compare Configs", "Show diff between two experiments"),
                 ("mark_done", "✅ Mark Done", "Manually mark experiment as done"),
                 ("mark_failed", "❌ Mark Failed", "Manually mark experiment as failed"),
+                ("reload_config", "🔄 Reload Config", "Reload configuration without resetting studies"),
                 ("reset_study", "🔃 Reset Study", "Reloads all configs and resets experiments to pending"),
                 ("export_config", "💾 Export Config", "Export experiment config to file"),
                 ("back", "​", "Return to main menu"),
@@ -844,6 +845,14 @@ class PrismTUI:
                     self.current_manager.mark_failed(exp_key, error_message="Manually marked as failed")
                     self.console.print(f"[yellow]❌ Marked '{exp_key}' as FAILED[/yellow]")
                     Prompt.ask("\n[dim]Press Enter to continue[/dim]")
+            
+            elif action == "reload_config":
+                try:
+                    self.current_manager.reload_configs()
+                    self.console.print(f"[green]✅ Configuration reloaded for study '{self.current_manager.study_name}'[/green]")
+                except Exception as e:
+                    self.console.print(f"[red]❌ Failed to reload config: {e}[/red]")
+                Prompt.ask("\n[dim]Press Enter to continue[/dim]")
                                      
             elif action == "reset_study":
                 if Confirm.ask("[red]⚠️  Reset the study completely? This will delete and recreate the experiment.[/red]"):

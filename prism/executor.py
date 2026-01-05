@@ -253,6 +253,13 @@ class Executor:
         
         # Build command
         cmd = self.project.get_train_command(config_path)
+
+        # Ensure we use the same Python interpreter that launched Prism.
+        # This guarantees training runs inside the active environment (CLI/TUI).
+        if cmd:
+            first = str(cmd[0]).strip().lower()
+            if first in {"python", "python3"}:
+                cmd[0] = sys.executable
         
         self._printer.progress(f"Running: {' '.join(cmd)}")
         
