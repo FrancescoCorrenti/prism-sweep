@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.1.4] - 2026-01-05
+### Added
+- Special `@` prefix syntax for string values to force list values to be treated as scalar (non-sweep) values. Use `param: "@[1, 2, 3]"` when you want to pass the entire list as a single value instead of creating a sweep with 3 experiments.
+
 ## [0.1.3] - 2026-01-05
 ### Fixed
 - Fixed scalar parameters from prism files being ignored in multi-file cartesian product mode. When using multiple prism files where some have nominal parameters (`$key`) and others only have scalar parameters, the scalars were not being applied to generated experiments. Now all scalar parameters are correctly applied before nominal/positional parameter substitution.

@@ -446,6 +446,10 @@ class PrismManager:
         """
         Extract nominal (dict), positional (list), and scalar parameters.
         
+        Special syntax:
+        - String values starting with '@' followed by list literal (e.g., param: "@[1, 2, 3]")
+          are parsed and treated as scalar list values
+        
         Returns:
             Tuple of (nominal_params, positional_params, scalar_params)
         """
@@ -458,7 +462,20 @@ class PrismManager:
                 # Skip the special _linking_mode key
                 if key == "_linking_mode":
                     continue
+                
                 full_key = f"{prefix}.{key}" if prefix else key
+                
+                # Check for @-prefixed string values (scalar list syntax)
+                if isinstance(value, str) and value.startswith("@"):
+                    import ast
+                    try:
+                        # Parse the string after @ as a Python literal
+                        parsed_value = ast.literal_eval(value[1:])
+                        scalar_params[full_key] = parsed_value
+                        continue
+                    except (ValueError, SyntaxError):
+                        # If parsing fails, treat as regular string
+                        pass
                 
                 if isinstance(value, dict):
                     # Check for sweep definition first (_type/_values syntax)

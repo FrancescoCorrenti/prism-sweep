@@ -240,6 +240,26 @@ PRISM only treats these as sweep syntax:
 Do not mix `$`-named experiments with positional sweeps (lists / `_type`) in the same `.prism.yaml`. If you need both, split them into multiple prism files.
 All overridden parameter paths must already exist in the base config (helps catch typos early).
 
+### Scalar List Values (`@` prefix)
+
+Sometimes you want to pass a list as a single value rather than creating a sweep. Use the `@` prefix on the value:
+
+```yaml
+# Without @ prefix: creates 3 experiments with values 1, 2, 3
+my_param: [1, 2, 3]
+
+# With @ prefix: single experiment with value [1, 2, 3]
+my_param: "@[1, 2, 3]"
+
+# Example: passing coordinates as a list
+training:
+  augmentation:
+    translate_range: "@[5.0, 5.0, 0.0]"  # Pass entire list as one value
+    rotation_axes: "@[[0, 1], [0, 2]]"   # List of lists as scalar
+```
+
+**Note:** The value must be a string starting with `@`, followed by a valid Python literal (list, tuple, etc.).
+
 ### Named Experiments (`$` notation)
 
 ```yaml
