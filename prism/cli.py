@@ -357,6 +357,23 @@ def cmd_reset(args, project: Project):
     print_success(f"✅ Reset '{study_name}' with {len(manager.state.experiments)} experiments")
 
 
+def cmd_reload(args, project: Project):
+    """Reload study configuration."""
+    study_name = args.study
+    try:
+        manager = load_study_by_name_state(study_name, project.output_dir)
+    except FileNotFoundError:
+        print_error(f"Study '{study_name}' not found")
+        sys.exit(1)
+
+    print_progress(f"🔄 Reloading configuration for study: {study_name}")
+    try:
+        manager.reload_configs()
+    except Exception as e:
+        print_error(str(e))
+        sys.exit(1)
+
+
 def cmd_retry(args, project: Project, executor: Executor):
     """Retry failed experiments."""
     study_name = args.study
@@ -553,6 +570,10 @@ def create_parser() -> argparse.ArgumentParser:
     reset_parser = subparsers.add_parser("reset", help="Reset a study")
     reset_parser.add_argument("study", type=str, help="Study name")
     
+    # reload
+    reload_parser = subparsers.add_parser("reload", help="Reload study configuration")
+    reload_parser.add_argument("study", type=str, help="Study name")
+    
     # retry
     retry_parser = subparsers.add_parser("retry", help="Retry failed experiments")
     retry_parser.add_argument("study", type=str, help="Study name")
@@ -652,6 +673,12 @@ def main(args: Optional[List[str]] = None):
             print_error("No project found")
             sys.exit(1)
         cmd_reset(parsed_args, project)
+    
+    elif parsed_args.command == "reload":
+        if not project:
+            print_error("No project found")
+            sys.exit(1)
+        cmd_reload(parsed_args, project)
     
     elif parsed_args.command == "retry":
         if not project:
