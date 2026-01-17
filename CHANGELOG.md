@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.2.0] - 2026-01-17
+
+### Added
+- **Inspect & Edit Configurations**: New `inspect_config` feature in TUI to view, edit, and export experiment configurations
+  - View full YAML config with syntax highlighting
+  - Edit individual parameters using dot notation (e.g., `model.lr`)
+  - Flat view showing all parameters with types
+  - Export configurations to YAML files
+- **Bulk Delete Experiments**: Delete multiple experiments at once using filter criteria
+  - Support for filter operators: `=`, `>`, `<`, `>=`, `<=`, `!=`
+  - Filter by experiment status
+  - Preview matching experiments before deletion
+- **Rules-Based Validation**: New `prism.rules.yaml` file for advanced configuration filtering
+  - Define rules with conditions and actions (`error`, `skip`, `skip-warning`, `include-warning`)
+  - Support for operators: `$gt`, `$gte`, `$lt`, `$lte`, `$ne`, `$in`, `$nin`, `$regex`, `$exists`
+  - Automatic rule discovery and application during sweep generation
+  - Example rules file in `examples/prism.rules.yaml`
+
+### Changed
+- **Manager API**: Added new methods for configuration manipulation
+  - `update_experiment_config()`: Update a single parameter in an experiment
+  - `update_experiment_configs_bulk()`: Update multiple parameters in multiple experiments
+  - `find_experiments_by_filter()`: Find experiments matching filter criteria
+  - `delete_experiments()`: Delete experiments by keys
+  - `delete_experiments_by_filter()`: Delete experiments matching filters
+- **TUI**: Replaced `show_config` with `inspect_config` for interactive configuration management
+- **expand_configs()**: Now automatically finds and applies rules from `prism.rules.yaml`
+
+### Improved
+- Better table layouts in TUI with adaptive column widths
+- Numbers and experiment names always visible regardless of terminal size
+
 ## [0.1.4] - 2026-01-05
 ### Added
 - Special `@` prefix syntax for string values to force list values to be treated as scalar (non-sweep) values. Use `param: "@[1, 2, 3]"` when you want to pass the entire list as a single value instead of creating a sweep with 3 experiments.
@@ -59,3 +91,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.2]: https://github.com/FrancescoCorrenti/prism-sweep/releases/tag/v0.1.2
 [0.1.3]: https://github.com/FrancescoCorrenti/prism-sweep/releases/tag/v0.1.3
 [0.1.4]: https://github.com/FrancescoCorrenti/prism-sweep/releases/tag/v0.1.4
+[0.2.0]: https://github.com/FrancescoCorrenti/prism-sweep/releases/tag/v0.2.0

@@ -456,6 +456,62 @@ PRISM only checks if the script succeeded (exit code 0).
 
 ---
 
+## What's New in v0.2.0
+
+### 🔍 Inspect & Edit Configurations
+View and modify experiment configurations directly from the TUI:
+- **Inspect Config**: View full YAML config with syntax highlighting
+- **Edit Parameters**: Change specific parameters using dot notation (e.g., `model.lr`)
+- **Flat View**: See all parameters in a flattened table with types
+- **Export**: Save configurations to YAML files
+
+### 🗑️ Bulk Delete Experiments
+Delete multiple experiments at once using filter criteria:
+```bash
+# In TUI: Study Menu → Bulk Delete
+# Filter examples:
+#   model.size=large
+#   optimizer.lr<0.001
+#   training.epochs>100
+```
+Supports operators: `=`, `>`, `<`, `>=`, `<=`, `!=`
+
+### 📋 Rules-Based Validation
+Define validation rules in `prism.rules.yaml` to automatically:
+- **Skip** invalid configurations
+- **Error** on forbidden combinations
+- **Warn** about experimental setups
+
+Example `prism.rules.yaml`:
+```yaml
+rules:
+  - name: "Skip large model with tiny LR"
+    conditions:
+      model.size: "large"
+      optimizer.lr:
+        $lt: 0.0001
+    action: skip-warning
+    message: "Large models need higher learning rates"
+
+  - name: "Invalid optimizer"
+    conditions:
+      model.type: "transformer"
+      optimizer.name: "sgd"
+    action: error
+    message: "Use AdamW for transformers"
+```
+
+Rules support operators: `$gt`, `$gte`, `$lt`, `$lte`, `$ne`, `$in`, `$nin`, `$regex`
+
+Place `prism.rules.yaml` in:
+- `configs/prism/prism.rules.yaml`
+- `configs/prism.rules.yaml`
+- Project root
+
+PRISM will automatically find and apply rules during sweep generation.
+
+---
+
 ## Advanced Features
 
 ### Custom Train Arguments

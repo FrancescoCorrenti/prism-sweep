@@ -22,6 +22,7 @@ from .utils import (
     print_info, print_success, print_warning, print_error, 
     print_progress, print_file, deep_merge, deep_get, deep_set
 )
+from .rules import RulesEngine, RulesConfig, find_rules_file
 
 if TYPE_CHECKING:
     from .project import Project
@@ -575,7 +576,9 @@ class PrismManager:
     def expand_configs(
         self,
         prism_keys: Optional[List[str]] = None,
-        linking_mode: Optional[str] = None
+        linking_mode: Optional[str] = None,
+        rules_file: Optional[Union[str, Path]] = None,
+        apply_rules: bool = True
     ) -> Dict[str, Dict[str, Any]]:
         """
         Expand the base config with prism overrides to generate experiment configs.
@@ -583,6 +586,8 @@ class PrismManager:
         Args:
             prism_keys: Optional list of specific keys to generate
             linking_mode: "zip" (strict) or "product" (cartesian). If None, reads from prism file or defaults to "zip"
+            rules_file: Optional path to a prism.rules.yaml file
+            apply_rules: Whether to apply rules for filtering (default True)
         
         Returns:
             Dict of {experiment_key: merged_config}
@@ -593,6 +598,7 @@ class PrismManager:
         # No prism configs -> single experiment
         if not prism_configs:
             experiments = {"default": copy.deepcopy(base_config)}
+            experiments = self._apply_rules_if_enabled(experiments, rules_file, apply_rules)
             self._update_state_experiments(experiments)
             print_success("Generated 1 experiment configuration (no prism sweep)")
             return experiments
@@ -600,7 +606,7 @@ class PrismManager:
         # Check for multiple prism files
         keys_per_file = self._get_keys_per_file()
         if len(keys_per_file) > 1:
-            return self._expand_configs_cartesian(prism_keys)
+            return self._expand_configs_cartesian(prism_keys, rules_file, apply_rules)
         
         # Single file mode
         prism_config = self.state.prism_configs_content[0]
@@ -701,14 +707,49 @@ class PrismManager:
         else:
             experiments["default"] = copy.deepcopy(base_config)
         
+        # Apply rules filtering
+        experiments = self._apply_rules_if_enabled(experiments, rules_file, apply_rules)
+        
         self._update_state_experiments(experiments)
         print_success(f"Generated {len(experiments)} experiment configurations")
         
         return experiments
     
+    def _apply_rules_if_enabled(
+        self,
+        experiments: Dict[str, Dict[str, Any]],
+        rules_file: Optional[Union[str, Path]],
+        apply_rules: bool
+    ) -> Dict[str, Dict[str, Any]]:
+        """Apply rules filtering if enabled."""
+        if not apply_rules:
+            return experiments
+        
+        # Find rules file
+        rules_path = rules_file
+        if rules_path is None:
+            # Try to find rules file automatically
+            if self.prism_config_paths:
+                prism_dir = self.prism_config_paths[0].parent
+                rules_path = find_rules_file(prism_dir, prism_dir.parent)
+        
+        if rules_path is None:
+            return experiments
+        
+        # Load and apply rules
+        rules_path = Path(rules_path)
+        if not rules_path.exists():
+            return experiments
+        
+        print_info(f"Applying rules from: {rules_path}")
+        rules_engine = RulesEngine.from_file(rules_path)
+        return rules_engine.filter_configs(experiments, verbose=True)
+    
     def _expand_configs_cartesian(
         self,
-        prism_keys: Optional[List[str]] = None
+        prism_keys: Optional[List[str]] = None,
+        rules_file: Optional[Union[str, Path]] = None,
+        apply_rules: bool = True
     ) -> Dict[str, Dict[str, Any]]:
         """Expand configs using cartesian product of keys from multiple prism files."""
         prism_configs = self.state.prism_configs_content
@@ -775,6 +816,9 @@ class PrismManager:
             
             experiments[compound_key] = merged
         
+        # Apply rules filtering
+        experiments = self._apply_rules_if_enabled(experiments, rules_file, apply_rules)
+        
         self._update_state_experiments(experiments)
         print_success(f"Generated {len(experiments)} experiment configurations (cartesian)")
         
@@ -820,6 +864,199 @@ class PrismManager:
         """Get the first pending experiment key."""
         pending = self.get_pending_experiments()
         return pending[0] if pending else None
+    
+    # =========================================================================
+    # Config Modification
+    # =========================================================================
+    
+    def update_experiment_config(
+        self,
+        key: str,
+        param_path: str,
+        value: Any,
+        save: bool = True
+    ) -> bool:
+        """
+        Update a specific parameter in an experiment's config.
+        
+        Args:
+            key: Experiment key
+            param_path: Dot-notation path to the parameter (e.g., "model.lr")
+            value: New value for the parameter
+            save: Whether to save state immediately
+        
+        Returns:
+            True if successful, False if experiment not found
+        """
+        if key not in self.state.experiments:
+            print_error(f"Experiment '{key}' not found")
+            return False
+        
+        exp = self.state.experiments[key]
+        self._set_nested_value(exp.config, param_path, value)
+        
+        if save:
+            self._save_state()
+            print_success(f"Updated '{key}': {param_path} = {value}")
+        
+        return True
+    
+    def update_experiment_configs_bulk(
+        self,
+        keys: List[str],
+        updates: Dict[str, Any]
+    ) -> int:
+        """
+        Update multiple parameters in multiple experiments.
+        
+        Args:
+            keys: List of experiment keys to update
+            updates: Dict of {param_path: value} updates to apply
+        
+        Returns:
+            Number of experiments updated
+        """
+        updated_count = 0
+        
+        for key in keys:
+            if key not in self.state.experiments:
+                continue
+            
+            exp = self.state.experiments[key]
+            for param_path, value in updates.items():
+                self._set_nested_value(exp.config, param_path, value)
+            updated_count += 1
+        
+        self._save_state()
+        print_success(f"Updated {updated_count} experiments")
+        return updated_count
+    
+    # =========================================================================
+    # Experiment Filtering & Deletion
+    # =========================================================================
+    
+    def find_experiments_by_filter(
+        self,
+        filters: Dict[str, Any],
+        status_filter: Optional[ExperimentStatus] = None
+    ) -> List[str]:
+        """
+        Find experiments matching filter criteria.
+        
+        Args:
+            filters: Dict of {param_path: expected_value} to match
+            status_filter: Optional status to filter by
+        
+        Returns:
+            List of matching experiment keys
+        """
+        matching = []
+        
+        for key, exp in self.state.experiments.items():
+            # Check status filter
+            if status_filter and exp.status != status_filter:
+                continue
+            
+            # Check all filter conditions
+            matches = True
+            for param_path, expected in filters.items():
+                actual = self._get_nested_value(exp.config, param_path)
+                if not self._match_filter_value(actual, expected):
+                    matches = False
+                    break
+            
+            if matches:
+                matching.append(key)
+        
+        return matching
+    
+    def _match_filter_value(self, actual: Any, expected: Any) -> bool:
+        """
+        Match a value against a filter pattern.
+        
+        Supports:
+        - Direct equality
+        - {"$gt": val}, {"$gte": val}, {"$lt": val}, {"$lte": val}
+        - {"$ne": val}
+        - {"$in": [values]}, {"$nin": [values]}
+        - {"$regex": "pattern"}
+        """
+        import re as re_module
+        
+        if isinstance(expected, dict):
+            for op, value in expected.items():
+                if op == "$gt":
+                    if actual is None or actual <= value:
+                        return False
+                elif op == "$gte":
+                    if actual is None or actual < value:
+                        return False
+                elif op == "$lt":
+                    if actual is None or actual >= value:
+                        return False
+                elif op == "$lte":
+                    if actual is None or actual > value:
+                        return False
+                elif op == "$ne":
+                    if actual == value:
+                        return False
+                elif op == "$in":
+                    if actual not in value:
+                        return False
+                elif op == "$nin":
+                    if actual in value:
+                        return False
+                elif op == "$regex":
+                    if actual is None or not isinstance(actual, str):
+                        return False
+                    if not re_module.search(value, actual):
+                        return False
+                else:
+                    # Unknown operator - treat as nested dict
+                    return False
+            return True
+        
+        return actual == expected
+    
+    def delete_experiments(self, keys: List[str]) -> int:
+        """
+        Delete experiments by their keys.
+        
+        Args:
+            keys: List of experiment keys to delete
+        
+        Returns:
+            Number of experiments deleted
+        """
+        deleted_count = 0
+        for key in keys:
+            if key in self.state.experiments:
+                del self.state.experiments[key]
+                deleted_count += 1
+        
+        if deleted_count > 0:
+            self._save_state()
+            print_success(f"Deleted {deleted_count} experiments")
+        
+        return deleted_count
+    
+    def delete_experiments_by_filter(
+        self,
+        filters: Dict[str, Any],
+        status_filter: Optional[ExperimentStatus] = None
+    ) -> int:
+        """
+        Delete experiments matching filter criteria.
+        
+        Args:
+            filters: Dict of {param_path: expected_value} to match
+            status_filter: Optional status to filter by
+        
+        Returns:
+            Number of experiments deleted
+        """
+        matching = self.find_experiments_by_filter(filters, status_filter)
+        return self.delete_experiments(matching)
     
     # =========================================================================
     # Status Management

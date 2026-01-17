@@ -298,9 +298,9 @@ class PrismTUI:
             Selected option key
         """
         table = Table(title=title, box=box.ROUNDED, show_header=False, padding=(0, 2))
-        table.add_column("No.", style="cyan bold", width=4, justify="right", no_wrap=True)
-        table.add_column("Option", style="white bold", width=25, no_wrap=True)
-        table.add_column("Description", style="dim", width=55, no_wrap=True)
+        table.add_column("No.", style="cyan bold", justify="right", no_wrap=True)
+        table.add_column("Option", style="white bold", no_wrap=True)
+        table.add_column("Description", style="dim", overflow="fold")
         
         for i, (key, label, desc) in enumerate(options, 1):
             table.add_row(f"[{i}]", label, desc)
@@ -346,14 +346,14 @@ class PrismTUI:
             return
         
         table = Table(title="📚 Existing Studies", box=box.ROUNDED)
-        table.add_column("No.", style="cyan", justify="right", width=4)
-        table.add_column("Status", justify="center", width=3)
-        table.add_column("Name", style="white bold", max_width=30)
-        table.add_column("Progress", justify="center", width=20)
-        table.add_column("Pending", justify="right", style="yellow")
-        table.add_column("Done", justify="right", style="green")
-        table.add_column("Failed", justify="right", style="red")
-        table.add_column("Last Updated", style="dim", max_width=20)
+        table.add_column("No.", style="cyan", justify="right", no_wrap=True)
+        table.add_column("Status", justify="center", no_wrap=True)
+        table.add_column("Name", style="white bold", no_wrap=True)
+        table.add_column("Progress", justify="center", no_wrap=True)
+        table.add_column("Pending", justify="right", style="yellow", no_wrap=True)
+        table.add_column("Done", justify="right", style="green", no_wrap=True)
+        table.add_column("Failed", justify="right", style="red", no_wrap=True)
+        table.add_column("Last Updated", style="dim", overflow="fold")
         
         for i, study in enumerate(studies, 1):
             # Status emoji
@@ -412,12 +412,12 @@ class PrismTUI:
         
         # Experiments table
         exp_table = Table(title="🧪 Experiments", box=box.ROUNDED)
-        exp_table.add_column("No.", style="cyan", justify="right", width=4)
-        exp_table.add_column("Key", style="white bold", max_width=40)
-        exp_table.add_column("Status", justify="center", width=10)
-        exp_table.add_column("Metrics", style="dim", max_width=30)
-        exp_table.add_column("Started", style="dim", max_width=18)
-        exp_table.add_column("Completed", style="dim", max_width=18)
+        exp_table.add_column("No.", style="cyan", justify="right", no_wrap=True)
+        exp_table.add_column("Key", style="white bold", no_wrap=True)
+        exp_table.add_column("Status", justify="center", no_wrap=True)
+        exp_table.add_column("Metrics", style="dim", overflow="fold")
+        exp_table.add_column("Started", style="dim", no_wrap=True)
+        exp_table.add_column("Completed", style="dim", no_wrap=True)
         
         experiments = manager.state.experiments
         for i, (key, exp) in enumerate(experiments.items(), 1):
@@ -494,20 +494,257 @@ class PrismTUI:
         key = self.print_menu(options, title="Select Experiment")
         return key if key not in ("back", "quit") else None
     
-    def show_config_viewer(self, manager: PrismManager, exp_key: str) -> None:
-        """Display the configuration for an experiment."""
+    def inspect_config(self, manager: PrismManager, exp_key: str) -> None:
+        """Display and optionally edit the configuration for an experiment."""
         if exp_key not in manager.state.experiments:
             self.console.print(f"[red]Experiment '{exp_key}' not found.[/red]")
             return
         
-        import yaml
+        while True:
+            self.clear_screen()
+            self.print_header(f"Inspect Config: {exp_key}")
+            
+            import yaml
+            config = manager.state.experiments[exp_key].config
+            yaml_str = yaml.dump(config, default_flow_style=False, sort_keys=False)
+            
+            syntax = Syntax(yaml_str, "yaml", theme="monokai", line_numbers=True)
+            self.console.print(Panel(syntax, title=f"📝 Config: {exp_key}", border_style="green"))
+            
+            # Show status
+            exp = manager.state.experiments[exp_key]
+            self.console.print(f"\n[dim]Status: {exp.status.value}[/dim]")
+            
+            options = [
+                ("edit", "✏️  Edit Parameter", "Modify a specific config parameter"),
+                ("flatten", "📋 Show Flat View", "Show all parameters with dot notation"),
+                ("export", "💾 Export", "Export config to YAML file"),
+                ("back", "", "Return"),
+            ]
+            
+            action = self.print_menu(options, title="Actions")
+            
+            if action == "back" or action == "quit":
+                break
+            elif action == "edit":
+                self._edit_config_parameter(manager, exp_key)
+            elif action == "flatten":
+                self._show_flat_config(config, exp_key)
+            elif action == "export":
+                default_path = self.project.config.get_resolved_paths().output_dir / f"{exp_key}_config.yaml"
+                export_path = Prompt.ask("[cyan]Export path[/cyan]", default=str(default_path))
+                manager.export_config(exp_key, Path(export_path))
+                self.console.print(f"[green]✅ Config exported to: {export_path}[/green]")
+                Prompt.ask("\n[dim]Press Enter to continue[/dim]")
+    
+    def _edit_config_parameter(self, manager: PrismManager, exp_key: str) -> None:
+        """Edit a single parameter in an experiment config."""
         config = manager.state.experiments[exp_key].config
-        yaml_str = yaml.dump(config, default_flow_style=False, sort_keys=False)
         
-        syntax = Syntax(yaml_str, "yaml", theme="monokai", line_numbers=True)
-        self.console.print(Panel(syntax, title=f"📝 Config: {exp_key}", border_style="green"))
+        # Show flattened config for reference
+        flat_params = self._flatten_dict(config)
+        
+        self.console.print("\n[cyan]Available parameters (dot notation):[/cyan]")
+        for i, (path, value) in enumerate(sorted(flat_params.items())[:20], 1):
+            val_str = str(value)
+            if len(val_str) > 40:
+                val_str = val_str[:37] + "..."
+            self.console.print(f"  [dim]{i}.[/dim] {path} = [yellow]{val_str}[/yellow]")
+        if len(flat_params) > 20:
+            self.console.print(f"  [dim]... and {len(flat_params) - 20} more[/dim]")
+        
+        self.console.print()
+        param_path = Prompt.ask("[cyan]Parameter path (dot notation, e.g., model.lr)[/cyan]")
+        
+        if not param_path:
+            return
+        
+        # Get current value
+        from .utils import deep_get
+        current_value = deep_get(config, param_path)
+        
+        if current_value is None:
+            self.console.print(f"[yellow]Parameter '{param_path}' not found. It will be created.[/yellow]")
+            current_str = ""
+        else:
+            current_str = str(current_value)
+        
+        new_value_str = Prompt.ask(
+            f"[cyan]New value[/cyan]",
+            default=current_str
+        )
+        
+        # Try to parse the value
+        try:
+            import ast
+            new_value = ast.literal_eval(new_value_str)
+        except (ValueError, SyntaxError):
+            # Keep as string
+            new_value = new_value_str
+        
+        if Confirm.ask(f"[yellow]Set {param_path} = {new_value} ({type(new_value).__name__})?[/yellow]"):
+            manager.update_experiment_config(exp_key, param_path, new_value)
+            self.console.print(f"[green]✅ Updated {param_path}[/green]")
         
         Prompt.ask("\n[dim]Press Enter to continue[/dim]")
+    
+    def _show_flat_config(self, config: Dict[str, Any], exp_key: str) -> None:
+        """Show a flattened view of the config."""
+        flat_params = self._flatten_dict(config)
+        
+        table = Table(title=f"📋 Flat Config: {exp_key}", box=box.ROUNDED)
+        table.add_column("Parameter", style="cyan", no_wrap=True)
+        table.add_column("Value", style="yellow", overflow="fold")
+        table.add_column("Type", style="dim", no_wrap=True)
+        
+        for path, value in sorted(flat_params.items()):
+            val_str = str(value)
+            type_str = type(value).__name__
+            table.add_row(path, val_str, type_str)
+        
+        self.console.print(table)
+        Prompt.ask("\n[dim]Press Enter to continue[/dim]")
+    
+    def _flatten_dict(self, d: Dict, parent_key: str = '', sep: str = '.') -> Dict[str, Any]:
+        """Flatten a nested dictionary."""
+        items = []
+        for k, v in d.items():
+            new_key = f"{parent_key}{sep}{k}" if parent_key else k
+            if isinstance(v, dict):
+                items.extend(self._flatten_dict(v, new_key, sep=sep).items())
+            else:
+                items.append((new_key, v))
+        return dict(items)
+    
+    def bulk_delete_experiments(self, manager: PrismManager) -> None:
+        """Delete experiments in bulk based on filter criteria."""
+        self.clear_screen()
+        self.print_header("Bulk Delete Experiments")
+        
+        self.console.print(Panel(
+            "Delete multiple experiments matching filter criteria.\n\n"
+            "Filter syntax examples:\n"
+            "  - model.lr=0.001 (exact match)\n"
+            "  - model.size=large (exact match)\n"
+            "  - training.epochs>100 (greater than)\n"
+            "  - status=PENDING (filter by status)\n\n"
+            "Combine multiple filters with AND logic.",
+            title="📋 Bulk Delete",
+            border_style="red"
+        ))
+        
+        # Collect filters
+        filters: Dict[str, Any] = {}
+        status_filter: Optional[ExperimentStatus] = None
+        
+        while True:
+            self.console.print(f"\n[cyan]Current filters:[/cyan] {filters if filters else '(none)'}")
+            if status_filter:
+                self.console.print(f"[cyan]Status filter:[/cyan] {status_filter.value}")
+            
+            # Show matching count
+            matching = manager.find_experiments_by_filter(filters, status_filter)
+            self.console.print(f"[yellow]Matching experiments: {len(matching)}[/yellow]")
+            
+            options = [
+                ("add", "➕ Add Filter", "Add a parameter filter"),
+                ("status", "📊 Filter by Status", "Filter by experiment status"),
+                ("preview", "👀 Preview", "Show matching experiments"),
+                ("delete", "🗑️  Delete", "Delete matching experiments"),
+                ("clear", "🔄 Clear Filters", "Remove all filters"),
+                ("back", "", "Cancel and return"),
+            ]
+            
+            action = self.print_menu(options, title="Actions")
+            
+            if action == "back" or action == "quit":
+                break
+            
+            elif action == "add":
+                filter_str = Prompt.ask("[cyan]Filter (e.g., model.lr=0.001 or training.epochs>100)[/cyan]")
+                if filter_str:
+                    parsed = self._parse_filter(filter_str)
+                    if parsed:
+                        param_path, value = parsed
+                        filters[param_path] = value
+                        self.console.print(f"[green]Added filter: {param_path} = {value}[/green]")
+                    else:
+                        self.console.print("[red]Invalid filter syntax[/red]")
+            
+            elif action == "status":
+                status_options = [
+                    ("PENDING", "⏳ PENDING", ""),
+                    ("DONE", "✅ DONE", ""),
+                    ("FAILED", "❌ FAILED", ""),
+                    ("RUNNING", "🔄 RUNNING", ""),
+                    ("clear", "🔄 Clear", "Remove status filter"),
+                ]
+                status_choice = self.print_menu(status_options, title="Select Status")
+                if status_choice == "clear":
+                    status_filter = None
+                elif status_choice in ("PENDING", "DONE", "FAILED", "RUNNING"):
+                    status_filter = ExperimentStatus(status_choice)
+            
+            elif action == "preview":
+                matching = manager.find_experiments_by_filter(filters, status_filter)
+                if not matching:
+                    self.console.print("[yellow]No experiments match the filters.[/yellow]")
+                else:
+                    self.console.print(f"\n[cyan]Matching experiments ({len(matching)}):[/cyan]")
+                    for key in matching[:20]:
+                        exp = manager.state.experiments[key]
+                        self.console.print(f"  - {key} [{exp.status.value}]")
+                    if len(matching) > 20:
+                        self.console.print(f"  [dim]... and {len(matching) - 20} more[/dim]")
+                Prompt.ask("\n[dim]Press Enter to continue[/dim]")
+            
+            elif action == "delete":
+                matching = manager.find_experiments_by_filter(filters, status_filter)
+                if not matching:
+                    self.console.print("[yellow]No experiments match the filters.[/yellow]")
+                    continue
+                
+                if Confirm.ask(f"[red]⚠️  Delete {len(matching)} experiments?[/red]"):
+                    deleted = manager.delete_experiments(matching)
+                    self.console.print(f"[green]✅ Deleted {deleted} experiments[/green]")
+                    Prompt.ask("\n[dim]Press Enter to continue[/dim]")
+                    break
+            
+            elif action == "clear":
+                filters = {}
+                status_filter = None
+                self.console.print("[green]Filters cleared[/green]")
+    
+    def _parse_filter(self, filter_str: str) -> Optional[Tuple[str, Any]]:
+        """Parse a filter string like 'model.lr=0.001' or 'epochs>100'."""
+        import re
+        
+        # Try operators: >=, <=, !=, >, <, =
+        operators = [
+            (r'(.+?)>=(.+)', lambda v: {"$gte": v}),
+            (r'(.+?)<=(.+)', lambda v: {"$lte": v}),
+            (r'(.+?)!=(.+)', lambda v: {"$ne": v}),
+            (r'(.+?)>(.+)', lambda v: {"$gt": v}),
+            (r'(.+?)<(.+)', lambda v: {"$lt": v}),
+            (r'(.+?)=(.+)', lambda v: v),  # Exact match
+        ]
+        
+        for pattern, transform in operators:
+            match = re.match(pattern, filter_str.strip())
+            if match:
+                param_path = match.group(1).strip()
+                value_str = match.group(2).strip()
+                
+                # Try to parse the value
+                try:
+                    import ast
+                    value = ast.literal_eval(value_str)
+                except (ValueError, SyntaxError):
+                    value = value_str
+                
+                return param_path, transform(value)
+        
+        return None
     
     def show_config_diff(self, manager: PrismManager) -> None:
         """Show diff between two experiment configurations."""
@@ -554,9 +791,9 @@ class PrismTUI:
         
         # Build diff table
         diff_table = Table(title=f"🔍 Diff: {key1} vs {key2}", box=box.ROUNDED)
-        diff_table.add_column("Parameter", style="cyan", max_width=40)
-        diff_table.add_column(key1, style="red", max_width=30)
-        diff_table.add_column(key2, style="green", max_width=30)
+        diff_table.add_column("Parameter", style="cyan", no_wrap=True)
+        diff_table.add_column(key1, style="red", overflow="fold")
+        diff_table.add_column(key2, style="green", overflow="fold")
         
         diff_count = 0
         for key in all_keys:
@@ -783,13 +1020,13 @@ class PrismTUI:
                 ("execute_all", "🎬 Execute All", "Run all pending experiments"),
                 ("execute_key", "🎯 Execute Specific", "Run a specific experiment by key"),
                 ("retry_failed", "❎ Retry Failed", "Reset and re-run failed experiments"),
-                ("show_config", "👀 View Config", "Display config for an experiment"),
-                ("diff_configs", "🔍 Compare Configs", "Show diff between two experiments"),
+                ("inspect_config", "🔍 Inspect Config", "View and edit experiment configuration"),
+                ("diff_configs", "📊 Compare Configs", "Show diff between two experiments"),
+                ("bulk_delete", "🗑️  Bulk Delete", "Delete experiments matching filters"),
                 ("mark_done", "✅ Mark Done", "Manually mark experiment as done"),
                 ("mark_failed", "❌ Mark Failed", "Manually mark experiment as failed"),
                 ("reload_config", "🔄 Reload Config", "Reload configuration without resetting studies"),
                 ("reset_study", "🔃 Reset Study", "Reloads all configs and resets experiments to pending"),
-                ("export_config", "💾 Export Config", "Export experiment config to file"),
                 ("back", "​", "Return to main menu"),
             ]
             
@@ -824,13 +1061,16 @@ class PrismTUI:
                 elif Confirm.ask(f"[yellow]Retry {failed_count} failed experiments?[/yellow]"):
                     self.execute_experiment(self.current_manager, mode="failed")
                     
-            elif action == "show_config":
+            elif action == "inspect_config":
                 exp_key = self.select_experiment(self.current_manager)
                 if exp_key:
-                    self.show_config_viewer(self.current_manager, exp_key)
+                    self.inspect_config(self.current_manager, exp_key)
                     
             elif action == "diff_configs":
                 self.show_config_diff(self.current_manager)
+            
+            elif action == "bulk_delete":
+                self.bulk_delete_experiments(self.current_manager)
                 
             elif action == "mark_done":
                 exp_key = self.select_experiment(self.current_manager, negative_filter=ExperimentStatus.DONE)
@@ -872,15 +1112,6 @@ class PrismTUI:
                         )
                     except Exception as e:
                         self.console.print(f"[red]❌ Failed to reset study: {e}[/red]")
-                    Prompt.ask("\n[dim]Press Enter to continue[/dim]")
-            
-            elif action == "export_config":
-                exp_key = self.select_experiment(self.current_manager)
-                if exp_key:
-                    default_path = self.project.config.get_resolved_paths().output_dir / f"{exp_key}_config.yaml"
-                    export_path = Prompt.ask("[cyan]Export path[/cyan]", default=str(default_path))
-                    self.current_manager.export_config(exp_key, Path(export_path))
-                    self.console.print(f"[green]✅ Config exported to: {export_path}[/green]")
                     Prompt.ask("\n[dim]Press Enter to continue[/dim]")
             
             # Refresh study info

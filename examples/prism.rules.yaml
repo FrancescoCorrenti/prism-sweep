@@ -1,0 +1,53 @@
+# Prism Rules - Example Configuration
+# 
+# This file defines rules for filtering, skipping, or flagging experiment configurations
+# during sweep generation.
+#
+# Supported actions:
+#   - error: Stop sweep generation with an error
+#   - skip: Silently skip the configuration
+#   - skip-warning: Skip and print a warning
+#   - include-warning: Include but print a warning
+#
+# Condition operators:
+#   - Direct value: Exact match (e.g., value: "large")
+#   - $gt, $gte, $lt, $lte: Numeric comparisons
+#   - $ne: Not equal
+#   - $in, $nin: Value in/not in list
+#   - $regex: Regex pattern match (strings only)
+#   - $exists: Check if parameter exists (true/false)
+
+rules:
+  # Example: Skip configurations with very low learning rate and large model
+  - name: "Skip large model with tiny LR"
+    conditions:
+      model.size: "large"
+      optimizer.lr:
+        $lt: 0.0001
+    action: skip-warning
+    message: "Large models typically need higher learning rates"
+
+  # Example: Error on invalid combinations
+  - name: "Invalid optimizer for transformer"
+    conditions:
+      model.type: "transformer"
+      optimizer.name: "sgd"
+    action: error
+    message: "SGD is not recommended for transformer models, use AdamW"
+
+  # Example: Warning for experimental configurations
+  - name: "Experimental: ViT with focal loss"
+    conditions:
+      model.backbone: "vit"
+      loss.type: "focal"
+    action: include-warning
+    message: "This combination is experimental and may not converge"
+
+  # Example: Skip specific seeds in debug mode
+  # - name: "Debug mode seeds"
+  #   conditions:
+  #     debug: true
+  #     seed:
+  #       $nin: [42, 123]
+  #   action: skip
+  #   message: "In debug mode, only run with specific seeds"

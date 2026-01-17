@@ -71,6 +71,9 @@ from .project import Project, ProjectConfig, find_project, ProjectNotFoundError
 # Execution
 from .executor import Executor, ExecutionResult, DryRunExecutor
 
+# Rules
+from .rules import Rule, RuleAction, RulesConfig, RulesEngine, find_rules_file
+
 # Utils
 from .utils import (
     PrintContext,
@@ -100,6 +103,13 @@ __all__ = [
     "ExecutionResult",
     "DryRunExecutor",
     
+    # Rules
+    "Rule",
+    "RuleAction",
+    "RulesConfig",
+    "RulesEngine",
+    "find_rules_file",
+    
     # Utils
     "PrintContext",
     "deep_get",
@@ -110,4 +120,4 @@ __all__ = [
     "cli_main",
 ]
 
-__version__ = "0.1.4"
+__version__ = "0.2.0"
